@@ -64,22 +64,22 @@ import torch
 import numpy as np
 
 class PanguModel(nn.Module):
-  def __init__(self, C=192, patch_size=(2, 4, 4)):
+  def __init__(self, C=192, patch_size=(2, 4, 4), device='cpu'):
     super().__init__()
     # Drop path rate is linearly increased as the depth increases
     drop_list = linspace(0, 0.2, 8) # used to be drop_path_list
     
-    self.C = 192
+    self.C = C
     self.patch_size = patch_size
 
     # Patch embedding
-    self._input_layer = PatchEmbedding((2, 4, 4), self.C)
+    self._input_layer = PatchEmbedding((2, 4, 4), dim=self.C, device=device)
 
     # Four basic layers
-    self.layer1 = EarthSpecificLayer(2, self.C, drop_list[:2], 6,  input_shape=[640, 144])
-    self.layer2 = EarthSpecificLayer(3, 2*self.C, drop_list[2:], 12, input_shape=[240, 96]) # changed from [6:]. check. # Reduced number of layers for simplicity
-    self.layer3 = EarthSpecificLayer(3, 2*self.C, drop_list[2:], 12, input_shape=[240, 96]) # changed from [6:]. check. # Reduced number of layers for simplicity
-    self.layer4 = EarthSpecificLayer(2, self.C, drop_list[:2], 6,  input_shape=[640, 144])
+    self.layer1 = EarthSpecificLayer(2, self.C, drop_list[:2], 6,  input_shape=[640, int(144/2)], device=device)
+    self.layer2 = EarthSpecificLayer(3, 2*self.C, drop_list[2:], 12, input_shape=[240, int(96/2)], device=device) # changed from [6:]. check. # Reduced number of layers for simplicity
+    self.layer3 = EarthSpecificLayer(3, 2*self.C, drop_list[2:], 12, input_shape=[240, int(96/2)], device=device) # changed from [6:]. check. # Reduced number of layers for simplicity
+    self.layer4 = EarthSpecificLayer(2, self.C, drop_list[:2], 6,  input_shape=[640, int(144/2)], device=device)
 
     # Upsample and downsample
     self.upsample = UpSample(self.C*2, self.C)
@@ -119,18 +119,15 @@ class PanguModel(nn.Module):
     x = self.layer4(x, 8, 360, 181) 
 
     # Skip connect, in last dimension(C from 192 to 384)
-    print("skip dim:", skip.shape)
-    print("x dim:", x.shape)
 
     x = torch.cat((skip, x), dim=2)
 
     # Recover the output fields from patches
-    print("x shape before convtranspose3d", x.shape)
     output, output_surface = self._output_layer(x, Z=8, H=181, W=360)
     return output, output_surface
 
 class PatchEmbedding(nn.Module):
-  def __init__(self, patch_size, dim):
+  def __init__(self, patch_size, dim, device):
     '''Patch embedding operation'''
     super().__init__()
     self.patch_size = patch_size
@@ -141,6 +138,9 @@ class PatchEmbedding(nn.Module):
 
     # Load constant masks from the disc
     self.land_mask, self.soil_type, self.topography = LoadConstantMask(patch_size)
+    self.land_mask = self.land_mask.to(device)
+    self.soil_type = self.soil_type.to(device)
+    self.topography = self.topography.to(device)
     
   def forward(self, input, input_surface):
     # Zero-pad the input
@@ -166,9 +166,7 @@ class PatchEmbedding(nn.Module):
     y1_pad    = (self.patch_size[2] - (input_surface_shape[3] % self.patch_size[2])) % self.patch_size[2] // 2
     y2_pad    = (self.patch_size[2] - (input_surface_shape[3] % self.patch_size[2])) % self.patch_size[2] - y1_pad
     
-    print("input surface shape beforehand", input_surface.shape)
     input_surface  = torch.nn.functional.pad(input_surface, pad=(y1_pad, y2_pad, x1_pad, x2_pad), mode='constant', value=0)
-    
     
     # Apply a linear projection for patch_size[0]*patch_size[1]*patch_size[2] patches, patch_size = (2, 4, 4) as in the original paper
     input = self.conv(input)
@@ -177,8 +175,6 @@ class PatchEmbedding(nn.Module):
     # input_surface =  Concatenate(input_surface, self.land_mask, self.soil_type, self.topography)    
     # Need to broadcast in this case because we are copying the data over more than 1 dimension
     # TODO: verify?
-    print("input surface shape afterwards", input_surface.shape)
-    print("land mask shape", self.topography.shape)
     # Broadcast to 4D data
     # Don't rewrite definition of self.__ for now
     # --> to deal with different epochs with different amounts of data
@@ -221,13 +217,9 @@ class PatchRecovery(nn.Module):
     output = self.conv(x[:, :, 1:, :, :])
     output_surface = self.conv_surface(x[:, :, 0, :, :])
 
-    print("current output shape", output.shape)
-    print("current output surface shape", output_surface.shape)
     # Crop the output to remove zero-paddings
     output = output[:, :, 1:, 1:-2, :]
     output_surface = output_surface[:, :, 1:-2, :]
-    print("after cropping, output shape", output.shape)
-    print("after cropping, output surface shape", output_surface.shape)
     return output, output_surface
 
 class DownSample(nn.Module):
@@ -251,7 +243,7 @@ class DownSample(nn.Module):
 
     x = torch.nn.functional.pad(x, pad=(0, 0, z1_pad, z2_pad, y1_pad, y2_pad), mode='constant', value=0)
 
-    print("y, z padding", (y1_pad, y2_pad, z1_pad, z2_pad))
+    
     # Reorganize x to reduce the resolution: simply change the order and downsample from (8, 360, 182) to (8, 180, 91)
     Z, H, W = x.shape[1:4]
     # Reshape x to facilitate downsampling
@@ -292,7 +284,6 @@ class UpSample(nn.Module):
     x = permute(x, (0,1,2,4,3,5,6))
     # Reshape to get Tensor with a resolution of (8, 360, 182)
     x = reshape(x, shape=(x.shape[0], 8, 360, 182, x.shape[-1]))    
-    print("upsampling")
 
     # Crop the output to the input shape of the network
     x = x[:, :, :, :-1, :] # How to communicate cropping efficiently between the down/upsampling dimensions?
@@ -312,7 +303,7 @@ class EarthSpecificLayer(nn.Module):
   # dim   = 192
   # drop_path_ratio_list: drop_list[:2]
   # heads = 6
-  def __init__(self, depth, dim, drop_path_ratio_list, heads, input_shape):
+  def __init__(self, depth, dim, drop_path_ratio_list, heads, input_shape, device):
     '''Basic layer of our network, contains 2 or 6 blocks'''
     super().__init__()
     self.depth = depth
@@ -320,7 +311,7 @@ class EarthSpecificLayer(nn.Module):
     self.blocks = []
     # Construct basic blocks
     for i in np.arange(depth): # is using np here ok?
-      self.blocks.append(EarthSpecificBlock(dim, drop_path_ratio_list[i], heads, input_shape=input_shape))
+      self.blocks.append(EarthSpecificBlock(dim, drop_path_ratio_list[i], heads, input_shape=input_shape,device=device))
     
 
   def forward(self, x, Z, H, W):
@@ -334,7 +325,7 @@ class EarthSpecificLayer(nn.Module):
     return x
 
 class EarthSpecificBlock(nn.Module):
-  def __init__(self, dim, drop_path_ratio, heads, input_shape):
+  def __init__(self, dim, drop_path_ratio, heads, input_shape, device):
     '''
     3D transformer block with Earth-Specific bias and window attention, 
     see https://github.com/microsoft/Swin-Transformer for the official implementation of 2D window attention.
@@ -345,11 +336,25 @@ class EarthSpecificBlock(nn.Module):
     self.window_size = (2, 6, 12)
 
     # Initialize serveral operations
-    self.drop_path = DropPath(drop_prob=drop_path_ratio)
-    self.norm1 = LayerNorm(dim)
-    self.norm2 = LayerNorm(dim)
-    self.linear = MLP(dim, 0)
-    self.attention = EarthAttention3D(dim, heads, 0, self.window_size, input_shape)
+    self.drop_path = DropPath(drop_prob=drop_path_ratio).to(device)
+    self.norm1 = LayerNorm(dim).to(device)
+    self.norm2 = LayerNorm(dim).to(device)
+    self.linear = MLP(dim, 0).to(device)
+    self.attention = EarthAttention3D(dim, heads, 0, self.window_size, input_shape).to(device)
+
+  def _window_partition(x, window_size):
+    """
+    Args:
+        x: (B, H, W, C)
+        window_size (int): window size
+
+    Returns:
+        windows: (num_windows*B, window_size, window_size, C)
+    """
+    B, Z, H, W, C = x.shape
+    x = x.view(B, Z // window_size[0], window_size[0], H // window_size[1], window_size[1], W // window_size[2], window_size[2], C)
+    windows = x.permute(0, 1, 3, 5, 2, 4, 6, 7).contiguous().view(-1, window_size[0], window_size[1], window_size[2], C)
+    return windows
 
   def forward(self, x, Z, H, W, roll):
     # Z = 8,
@@ -360,8 +365,6 @@ class EarthSpecificBlock(nn.Module):
 
     # Reshape input to three dimensions to calculate window attention
     x = reshape(x, shape=(x.shape[0], Z, H, W, x.shape[2]))
-
-    print("x orign", x.shape)
         
     # Zero-pad input if needed
     # TODO: padding according to window size. Correct?
@@ -541,7 +544,7 @@ class EarthAttention3D(nn.Module):
     # Linear layer to create query, key and value
     # Record the original shape of the input BEFORE linear layer (correct?)
     original_shape = x.shape 
-
+    
     x = self.linear1(x)
 
     # reshape the data to calculate multi-head attention
@@ -562,12 +565,15 @@ class EarthAttention3D(nn.Module):
 #    EarthSpecificBias = reshape(EarthSpecificBias, shape = [1]+EarthSpecificBias.shape)
     
     # Add the Earth-Specific bias to the attention matrix
-    attention = attention + EarthSpecificBias.unsqueeze(0) # TODO: unsqueeze "implementation" is from SWIN paper
+#    print("shape of attention", attention.shape)
+#    print("shape of ESB before unsqueezing,", EarthSpecificBias.shape)
+#    print("shape of ESB after unsqueezing,", EarthSpecificBias.unsqueeze(0).shape)
+    attention = attention + EarthSpecificBias#.unsqueeze(0) # TODO: unsqueeze "implementation" is from SWIN paper
 
     # Mask the attention between non-adjacent pixels, e.g., simply add -100 to the masked element.
     # gen_mask?
     # attention = self.mask_attention(attention, mask) # TODO: add mask_attention after understanding mask
-    attention  = self.attention(attention, mask) # hm?
+    #attention  = self.attention(attention, mask) # hm?
     attention = self.Softmax(attention)
     attention = self.dropout(attention)
 
