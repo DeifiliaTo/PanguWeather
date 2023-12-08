@@ -55,21 +55,21 @@ from torch import Tensor
 import h5py
 import math
 #import cv2
-from utils.img_utils import reshape_fields
+#from utils.img_utils import reshape_fields
 
 # params: dictionary, see lines ~533+ of train.py
 # files_pattern: train_data_path
 # distributed: = dist.is_initialized() = True/False from the environment
 # train = True/False boolean
 
-def get_data_loader(params, files_pattern, distributed, train):
+def get_data_loader(params, files_pattern, distributed, train, device):
 
-  dataset = GetDataset(params, files_pattern, train)
+  dataset = GetDataset(params, files_pattern, train, device)
   sampler = DistributedSampler(dataset, shuffle=train) if distributed else None
   
   dataloader = DataLoader(dataset,
-                          batch_size=int(params.batch_size),
-                          num_workers=params.num_data_workers,
+                          batch_size=int(params['batch_size']),
+                          num_workers=params['num_data_workers'],
                           shuffle=False, #(sampler is None),
                           sampler=sampler if train else None,
                           drop_last=True,
@@ -81,105 +81,111 @@ def get_data_loader(params, files_pattern, distributed, train):
     return dataloader, dataset
 
 class GetDataset(Dataset):
-  def __init__(self, params, location, train):
-    self.params = params
-    self.location = location
-    self.train = train
-    self.dt = params.dt
-    self.n_history = params.n_history
-    self.in_channels = np.array(params.in_channels)
-    self.out_channels = np.array(params.out_channels)
-    self.n_in_channels = len(self.in_channels)
-    self.n_out_channels = len(self.out_channels)
-    self.roll = params.roll
-    self._get_files_stats()
-    self.add_noise = params.add_noise if train else False
+    def __init__(self, params, file_path, train, device):
+        self.params = params
+        self.file_path= file_path
+        self.train = train
+        print("params", params)
+        self.dt = params['dt']
+        self.n_history = params['n_history']
+        self.in_channels = np.array(params['in_channels'])
+        self.out_channels = np.array(params['out_channels'])
+        self.n_in_channels  = 5#len(self.in_channels)
+        self.n_out_channels = 5#len(self.out_channels)
+        self.roll = params['roll']
+        self._get_files_stats(file_path)
+        self.add_noise = params['add_noise'] if train else False
+        self.p_means = h5py.File('/hkfs/work/workspace/scratch/ke4365-pangu/PANGU_ERA5_data_v0/static/pressure_means.h5')
+        self.s_means = h5py.File('/hkfs/work/workspace/scratch/ke4365-pangu/PANGU_ERA5_data_v0/static/surface_means.h5')
 
-    try:
-        self.normalize = params.normalize
-    except:
-        self.normalize = True #by default turn on normalization if not specified in config
+        self.device = device
+        print("dEVICE FOUND IS", device)
+        try:
+            self.normalize = params.normalize
+        except:
+            self.normalize = True #by default turn on normalization if not specified in config
 
-    if self.orography:
-      self.orography_path = params.orography_path
+    def _get_files_stats(self, file_path, dt=6):
+        self.files_paths_pressure = glob.glob(file_path + "/????.h5") # indicates file paths for pressure levels
+        self.files_paths_surface = glob.glob(file_path + "/single_????.h5") # indicates file paths for pressure levels
 
-  def _get_files_stats(self):
-    self.files_paths = glob.glob(self.location + "/*.h5")
-    self.files_paths.sort()
-    self.n_years = len(self.files_paths)
-    with h5py.File(self.files_paths[0], 'r') as _f:
-        logging.info("Getting file stats from {}".format(self.files_paths[0]))
-        self.n_samples_per_year = _f['fields'].shape[0]
-        #original image shape (before padding)
-        self.img_shape_x = _f['fields'].shape[2]
-        self.img_shape_y = _f['fields'].shape[3]
-
-    self.n_samples_total = self.n_years * self.n_samples_per_year
-    self.files = [None for _ in range(self.n_years)]
+        
+        self.files_paths_pressure.sort()
+        self.files_paths_surface.sort()
+        
+        assert len(self.files_paths_pressure) == len(self.files_paths_surface), "Number of years not identical in pressure vs. surface level data."
     
-    logging.info("Number of samples per year: {}".format(self.n_samples_per_year))
-    logging.info("Found data at path {}. Number of examples: {}. Image Shape: {} x {} x {}".format(self.location, self.n_samples_total, self.img_shape_x, self.img_shape_y, self.n_in_channels))
-    logging.info("Delta t: {} hours".format(6*self.dt))
-    logging.info("Including {} hours of past history in training at a frequency of {} hours".format(6*self.dt*self.n_history, 6*self.dt))
-
-
-  def _open_file(self, year_idx):
-    _file = h5py.File(self.files_paths[year_idx], 'r')
-    self.files[year_idx] = _file['fields']  
-  
-  def __len__(self):
-    return self.n_samples_total
-
-
-  def __getitem__(self, global_idx):
-    year_idx = int(global_idx/self.n_samples_per_year) #which year we are on
-    local_idx = int(global_idx%self.n_samples_per_year) #which sample in that year we are on - determines indices for centering
-
-    y_roll = np.random.randint(0, 1440) if self.train else 0#roll image in y direction
-
-    #open image file
-    if self.files[year_idx] is None:
-        self._open_file(year_idx)
-
-    if not self.precip:
-      #if we are not at least self.dt*n_history timesteps into the prediction
-      if local_idx < self.dt*self.n_history:
-          local_idx += self.dt*self.n_history
-
-      #if we are on the last image in a year predict identity, else predict next timestep
-      step = 0 if local_idx >= self.n_samples_per_year-self.dt else self.dt
-    else:
-      inp_local_idx = local_idx
-      tar_local_idx = local_idx
-      #if we are on the last image in a year predict identity, else predict next timestep
-      step = 0 if tar_local_idx >= self.n_samples_per_year-self.dt else self.dt
-      # first year has 2 missing samples in precip (they are first two time points)
-      if year_idx == 0:
-        lim = 1458
-        local_idx = local_idx%lim 
-        inp_local_idx = local_idx + 2
-        tar_local_idx = local_idx
-        step = 0 if tar_local_idx >= lim-self.dt else self.dt
-
-    #if two_step_training flag is true then ensure that local_idx is not the last or last but one sample in a year
-    if self.two_step_training:
-        if local_idx >= self.n_samples_per_year - 2*self.dt:
-            #set local_idx to last possible sample in a year that allows taking two steps forward
-            local_idx = self.n_samples_per_year - 3*self.dt
-
-    if self.train and self.roll:
-      y_roll = random.randint(0, self.img_shape_y)
-    else:
-      y_roll = 0
-
-    
-
-    if self.train and (self.crop_size_x or self.crop_size_y):
-      rnd_x = random.randint(0, self.img_shape_x-self.crop_size_x)
-      rnd_y = random.randint(0, self.img_shape_y-self.crop_size_y)    
-    else: 
-      rnd_x = 0
-      rnd_y = 0
+        self.n_years = len(self.files_paths_pressure)
+        with h5py.File(self.files_paths_pressure[0], 'r') as _f:
+            logging.info("Getting file stats from {}".format(self.files_paths_pressure[0]))
+            self.n_samples_per_year = _f['fields'].shape[0]
+            #original image shape (before padding)
+            self.img_shape_x = _f['fields'].shape[2]
+            self.img_shape_y = _f['fields'].shape[3]
+            self.n_in_channels = 13 #TODO
+        print("number of samples per year", self.n_samples_per_year)
+        self.n_samples_total = self.n_years * self.n_samples_per_year
+        self.files_pressure = [None for _ in range(self.n_years)]
+        self.files_surface = [None for _ in range(self.n_years)]
+        
+        logging.info("Number of samples per year: {}".format(self.n_samples_per_year))
+        logging.info("Found data at path {}. Number of examples: {}. Image Shape: {} x {} x {}".format(file_path, self.n_samples_total, self.img_shape_x, self.img_shape_y, self.n_in_channels))
+        logging.info("Delta t: {} hours".format(6*self.dt))
+        
+    def _open_pressure_file(self, year_idx):
+        _file = h5py.File(self.files_paths_pressure[year_idx], 'r')
+        self.files_pressure[year_idx] = _file
+        
+    def _open_surface_file(self, year_idx):
+        print(self.files_paths_surface[year_idx])
+        _file = h5py.File(self.files_paths_surface[year_idx], 'r')
+        self.files_surface[year_idx] = _file
       
-    return reshape_fields(self.files[year_idx][(local_idx-self.dt*self.n_history):(local_idx+1):self.dt, self.in_channels], 'inp', self.crop_size_x, self.crop_size_y, rnd_x, rnd_y,self.params, y_roll, self.train, self.normalize, self.add_noise), \
-           reshape_fields(self.files[year_idx][local_idx + step, self.out_channels], 'tar', self.crop_size_x, self.crop_size_y, rnd_x, rnd_y, self.params, y_roll, self.train, self.normalize)
+    def __len__(self):
+        return self.n_samples_total
+    
+    def __getitem__(self, global_idx, normalize=True):
+        # TODO: not yet safety checked for edge cases or other errors
+        # Doesn't yet allow for different dt times as in PGW
+        year_idx  = int(global_idx/self.n_samples_per_year) #which year we are on
+        local_idx = int(global_idx%self.n_samples_per_year) #which sample in that year we are on - determines indices for centering
+
+        #y_roll = np.random.randint(0, 1440) if self.train else 0#roll image in y direction
+    
+        #open image file
+        if self.files_pressure[year_idx] is None:
+            self._open_pressure_file(year_idx)
+    
+        if self.files_surface[year_idx] is None:
+            self._open_surface_file(year_idx)
+        
+        step = self.dt
+        target_step = local_idx + step
+        if target_step == self.n_samples_per_year:
+            target_step = local_idx
+        #if we are not at least self.dt*n_history timesteps into the prediction
+        #if local_idx < self.dt*self.n_history:
+         #   local_idx += self.dt*self.n_history
+    
+            #if we are on the last image in a year predict identity, else predict next timestep
+         #   step = 0 if local_idx >= self.n_samples_per_year-self.dt else self.dt
+        
+        #if self.train and self.roll:
+        #  y_roll = random.randint(0, self.img_shape_y)
+        #else:
+        #  y_roll = 0
+        if normalize:
+            t1 = torch.as_tensor((self.files_pressure[year_idx]['fields'][local_idx] - self.p_means['mean']) / self.p_means['std_dev'])
+            t2 = torch.as_tensor((self.files_surface[year_idx]['fields'][local_idx] - self.s_means['mean']) / self.s_means['std_dev'])
+            t3 = torch.as_tensor((self.files_pressure[year_idx]['fields'][target_step] - self.p_means['mean']) / self.p_means['std_dev'])
+            t4 = torch.as_tensor((self.files_surface[year_idx]['fields'][target_step] - self.s_means['mean']) / self.s_means['std_dev'])
+            t1 = t1#.to(self.device)
+            t2 = t2#.to(self.device)
+            t3 = t3#.to(self.device)
+            t4 = t4#.to(self.device)
+            return t1, t2, t3, t4
+        else:
+            return (self.files_pressure[year_idx]['fields'][local_idx], \
+                   self.files_surface[year_idx]['fields'][local_idx], \
+                   self.files_pressure[year_idx]['fields'][target_step], \
+                   self.files_surface[year_idx]['fields'][target_step])

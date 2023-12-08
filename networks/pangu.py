@@ -76,10 +76,10 @@ class PanguModel(nn.Module):
     self._input_layer = PatchEmbedding((2, 4, 4), dim=self.C, device=device)
 
     # Four basic layers
-    self.layer1 = EarthSpecificLayer(2, self.C, drop_list[:2], 6,  input_shape=[640, int(144/2)], device=device)
-    self.layer2 = EarthSpecificLayer(3, 2*self.C, drop_list[2:], 12, input_shape=[240, int(96/2)], device=device) # changed from [6:]. check. # Reduced number of layers for simplicity
-    self.layer3 = EarthSpecificLayer(3, 2*self.C, drop_list[2:], 12, input_shape=[240, int(96/2)], device=device) # changed from [6:]. check. # Reduced number of layers for simplicity
-    self.layer4 = EarthSpecificLayer(2, self.C, drop_list[:2], 6,  input_shape=[640, int(144/2)], device=device)
+    self.layer1 = EarthSpecificLayer(2, self.C, drop_list[:2], 6,  input_shape=[640, int(144/2)], device=device, input_resolution=(8, 360, 192))
+    self.layer2 = EarthSpecificLayer(3, 2*self.C, drop_list[2:], 12, input_shape=[240, int(96/2)], device=device, input_resolution=(8, 180, 96)) # changed from [6:]. check. # Reduced number of layers for simplicity
+    self.layer3 = EarthSpecificLayer(3, 2*self.C, drop_list[2:], 12, input_shape=[240, int(96/2)], device=device, input_resolution=(8, 180, 96)) # changed from [6:]. check. # Reduced number of layers for simplicity
+    self.layer4 = EarthSpecificLayer(2, self.C, drop_list[:2], 6,  input_shape=[640, int(144/2)], device=device, input_resolution=(8, 360, 192))
 
     # Upsample and downsample
     self.upsample = UpSample(self.C*2, self.C)
@@ -303,7 +303,7 @@ class EarthSpecificLayer(nn.Module):
   # dim   = 192
   # drop_path_ratio_list: drop_list[:2]
   # heads = 6
-  def __init__(self, depth, dim, drop_path_ratio_list, heads, input_shape, device):
+  def __init__(self, depth, dim, drop_path_ratio_list, heads, input_shape, device, input_resolution):
     '''Basic layer of our network, contains 2 or 6 blocks'''
     super().__init__()
     self.depth = depth
@@ -311,7 +311,7 @@ class EarthSpecificLayer(nn.Module):
     self.blocks = []
     # Construct basic blocks
     for i in np.arange(depth): # is using np here ok?
-      self.blocks.append(EarthSpecificBlock(dim, drop_path_ratio_list[i], heads, input_shape=input_shape,device=device))
+      self.blocks.append(EarthSpecificBlock(dim, drop_path_ratio_list[i], heads, input_shape=input_shape,device=device, input_resolution=input_resolution).to(device))
     
 
   def forward(self, x, Z, H, W):
@@ -325,7 +325,7 @@ class EarthSpecificLayer(nn.Module):
     return x
 
 class EarthSpecificBlock(nn.Module):
-  def __init__(self, dim, drop_path_ratio, heads, input_shape, device):
+  def __init__(self, dim, drop_path_ratio, heads, input_shape, device, input_resolution):
     '''
     3D transformer block with Earth-Specific bias and window attention, 
     see https://github.com/microsoft/Swin-Transformer for the official implementation of 2D window attention.
@@ -342,7 +342,11 @@ class EarthSpecificBlock(nn.Module):
     self.linear = MLP(dim, 0).to(device)
     self.attention = EarthAttention3D(dim, heads, 0, self.window_size, input_shape).to(device)
 
-  def _window_partition(x, window_size):
+    self.attn_mask = self._gen_mask_(Z=input_resolution[0], H=input_resolution[1], W=input_resolution[2]).to(device)
+    #self.register_buffer("attn_mask", attn_mask)
+    self.input_resolution = input_resolution
+
+  def _window_partition(self, x, window_size):
     """
     Args:
         x: (B, H, W, C)
@@ -355,6 +359,23 @@ class EarthSpecificBlock(nn.Module):
     x = x.view(B, Z // window_size[0], window_size[0], H // window_size[1], window_size[1], W // window_size[2], window_size[2], C)
     windows = x.permute(0, 1, 3, 5, 2, 4, 6, 7).contiguous().view(-1, window_size[0], window_size[1], window_size[2], C)
     return windows
+
+  def _window_reverse(self, windows, window_size, Z, H, W):
+      """
+      Args:
+          windows: (num_windows*B, window_size[0], window_size[1], window_size[2], C)
+          window_size (int): Window size
+          Z (int): Number of pressure heights
+          H (int): Height of image
+          W (int): Width of image
+
+      Returns:
+          x: (B, Z, H, W, C)
+      """
+      B = int(windows.shape[0] / (Z * H * W) * (window_size[0] * window_size[1] * window_size[2]))
+      x = windows.view(B, Z // window_size[0], H // window_size[1], W // window_size[2], window_size[0], window_size[1], window_size[2], -1)
+      x = x.permute(0, 1, 3, 5, 2, 4, 6, 7).contiguous().view(B, Z, H, W, -1)
+      return x
 
   def forward(self, x, Z, H, W, roll):
     # Z = 8,
@@ -382,40 +403,39 @@ class EarthSpecificBlock(nn.Module):
 
     if roll:
       # Roll x for half of the window for 3 dimensions
-      
       x = torch.roll(x, shifts=(self.window_size[0]//2, self.window_size[1]//2, self.window_size[2]//2), dims=(1, 2, 3))
+    
       # Generate mask of attention masks
       # If two pixels are not adjacent, then mask the attention between them
       # Your can set the matrix element to -1000 when it is not adjacent, then add it to the attention
-      
-
     # Reorganize data to calculate window attention
     # TODO: changed the Z, H, W to post-padding dimensions
     # x_window = reshape(x, shape=(x.shape[0], Z//self.window_size[0], self.window_size[0], H // self.window_size[1], self.window_size[1], W // self.window_size[2], self.window_size[2], x.shape[-1]))
-    x_window = reshape(x, shape=(x.shape[0], x.shape[1]//self.window_size[0], self.window_size[0], x.shape[2] // self.window_size[1], self.window_size[1], x.shape[3] // self.window_size[2], self.window_size[2], x.shape[-1]))
-    x_window = permute(x_window, (0, 1, 3, 5, 2, 4, 6, 7))
-
+#    x_window = reshape(x, shape=(x.shape[0], x.shape[1]//self.window_size[0], self.window_size[0], x.shape[2] // self.window_size[1], self.window_size[1], x.shape[3] // self.window_size[2], self.window_size[2], x.shape[-1]))
+#    x_window = permute(x_window, (0, 1, 3, 5, 2, 4, 6, 7))
+    x_window = self._window_partition(x, self.window_size) # nW * B, window_size[0], window_size[1], window_size[2], C
     # Get data stacked in 3D cubes, which will further be used to calculated attention among each cube
-    x_window = reshape(x_window, shape=(-1, self.window_size[0] * self.window_size[1] * self.window_size[2], x.shape[-1]))
-
-    # TODO: moved mask calculation to after computation of windows: check?
-    if roll:
-      mask = self._gen_mask_(x.shape[1], x.shape[2], x.shape[3], x_window)
-    else:
+    
+    if not roll:
       # e.g., zero matrix when you add mask to attention
-      mask = torch.zeros(ori_shape) ## TODO (?)
-
+      self.attn_mask = torch.zeros([x_window.shape[0], self.window_size[0]*self.window_size[1]*self.window_size[2], self.window_size[0]*self.window_size[1]*self.window_size[2]])
+                         
+    x_window = x_window.view(-1, self.window_size[0]*self.window_size[1]*self.window_size[2], x_window.shape[-1])# nW * B, window_size[0], window_size[1], window_size[2], C
+    
     # Apply 3D window attention with Earth-Specific bias
     # x_window = self.attention(x, mask) #TODO: check
-    x_window  = self.attention(x_window, mask)
+    attn_windows  = self.attention(x_window, self.attn_mask)
+    # TODO: using modified implementation from SWIN to merge windows
+    attn_windows = attn_windows.view(-1, self.window_size[0], self.window_size[1], self.window_size[2], x.shape[-1])
+
+    x = self._window_reverse(attn_windows, self.window_size, Z=x.shape[1], H=x.shape[2], W=x.shape[3])
 
     # Reorganize data to original shapes
-    x = reshape(x_window, shape=((-1, x.shape[1] // self.window_size[0], x.shape[2] // self.window_size[1], x.shape[3] // self.window_size[2], self.window_size[0], self.window_size[1], self.window_size[2], x_window.shape[-1])))
-    x = permute(x, (0, 1, 4, 2, 5, 3, 6, 7))
+    #x = reshape(x_window, shape=((-1, x.shape[1] // self.window_size[0], x.shape[2] // self.window_size[1], x.shape[3] // self.window_size[2], self.window_size[0], self.window_size[1], self.window_size[2], x_window.shape[-1])))
+    #x = permute(x, (0, 1, 4, 2, 5, 3, 6, 7))
 
     # Reshape the tensor back to its original shape
-    # x = reshape(x_window, shape=ori_shape)
-    x = reshape(x, shape=ori_shape)
+    x = reshape(x, shape=ori_shape) # B, Z*H*W, C
 
     if roll:
       # Roll x back for half of the window
@@ -423,6 +443,7 @@ class EarthSpecificBlock(nn.Module):
 
     # Crop the zero-padding
     x = x[:, x2_pad:x2_pad+Z, y2_pad:y2_pad+H, z2_pad:z2_pad+W, :] # TODO: upon revision; double check ordering of x1:-x2 vs x2:-x1 based on definition of pad function
+
     # Reshape the tensor back to the input shape
     x = reshape(x, shape=(x.shape[0], x.shape[1]*x.shape[2]*x.shape[3], x.shape[4]))
 
@@ -432,9 +453,9 @@ class EarthSpecificBlock(nn.Module):
     return x
   
 
-  def _gen_mask_(self, Z, H, W, x_window):
+  def _gen_mask_(self, Z, H, W):
     
-    img_mask = torch.zeros((1, Z, H, W, 1))  # 1 H W 1
+    img_mask = torch.zeros((1, Z, H, W, 1))  # 1 Z H W 1
     z_slices = (slice(0, -self.window_size[0]),
                 slice(-self.window_size[0], -self.window_size[0]//2),
                 slice(-self.window_size[0]//2, None))
@@ -449,14 +470,13 @@ class EarthSpecificBlock(nn.Module):
     for z in z_slices:
       for h in h_slices:
           for w in w_slices:
-              img_mask[z, h, w, :] = cnt
+              img_mask[:, z, h, w, :] = cnt
               cnt += 1
 
-    mask_windows = x_window  # nW, window_size, window_size, 1
-    mask_windows = mask_windows.view(-1, self.window_size[0] * self.window_size[1], self.window_size[2])
+    mask_windows = self._window_partition(img_mask, self.window_size)  # nW, window_size, window_size, 1
+    mask_windows = mask_windows.view(-1, self.window_size[0] * self.window_size[1]* self.window_size[2])
     attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
     attn_mask = attn_mask.masked_fill(attn_mask != 0, float(-100.0)).masked_fill(attn_mask == 0, float(0.0))
-
     return attn_mask
     
 class EarthAttention3D(nn.Module):
@@ -469,7 +489,7 @@ class EarthAttention3D(nn.Module):
 
     # Initialize several operations
     # Should make sense to use dim*3 to generate the vectors for a qkv matrix
-    self.linear1 = Linear(dim, dim*3, bias=True) #dim = 3
+    self.linear1 = Linear(dim, dim*3, bias=True) #dim = 3 
     self.linear2 = Linear(dim, dim)
     self.Softmax = Softmax(dim=-1)
     self.dropout = Dropout(dropout_rate)
@@ -543,7 +563,11 @@ class EarthAttention3D(nn.Module):
   def forward(self, x, mask):
     # Linear layer to create query, key and value
     # Record the original shape of the input BEFORE linear layer (correct?)
+
+    # port mask onto device??? 
+    mask = mask.to(x.get_device())
     original_shape = x.shape 
+    B_ = original_shape[0]
     
     x = self.linear1(x)
 
@@ -565,13 +589,17 @@ class EarthAttention3D(nn.Module):
 #    EarthSpecificBias = reshape(EarthSpecificBias, shape = [1]+EarthSpecificBias.shape)
     
     # Add the Earth-Specific bias to the attention matrix
-#    print("shape of attention", attention.shape)
-#    print("shape of ESB before unsqueezing,", EarthSpecificBias.shape)
-#    print("shape of ESB after unsqueezing,", EarthSpecificBias.unsqueeze(0).shape)
     attention = attention + EarthSpecificBias#.unsqueeze(0) # TODO: unsqueeze "implementation" is from SWIN paper
 
     # Mask the attention between non-adjacent pixels, e.g., simply add -100 to the masked element.
-    # gen_mask?
+    # from SWIN paper
+    nW = mask.shape[0]
+    N = original_shape[1]
+
+    attention = attention.view(B_ // nW, nW, self.head_number, N, N)
+    attention = attention + mask.unsqueeze(1).unsqueeze(0)
+    attention = attention.view(-1, self.head_number, N, N)
+
     # attention = self.mask_attention(attention, mask) # TODO: add mask_attention after understanding mask
     #attention  = self.attention(attention, mask) # hm?
     attention = self.Softmax(attention)
