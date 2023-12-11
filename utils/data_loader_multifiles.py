@@ -62,9 +62,9 @@ import math
 # distributed: = dist.is_initialized() = True/False from the environment
 # train = True/False boolean
 
-def get_data_loader(params, files_pattern, distributed, train, device):
+def get_data_loader(params, files_pattern, distributed, train, device, patch_size):
 
-  dataset = GetDataset(params, files_pattern, train, device)
+  dataset = GetDataset(params, files_pattern, train, device, patch_size)
   sampler = DistributedSampler(dataset, shuffle=train) if distributed else None
   
   dataloader = DataLoader(dataset,
@@ -81,7 +81,7 @@ def get_data_loader(params, files_pattern, distributed, train, device):
     return dataloader, dataset
 
 class GetDataset(Dataset):
-    def __init__(self, params, file_path, train, device):
+    def __init__(self, params, file_path, train, device, patch_size):
         self.params = params
         self.file_path= file_path
         self.train = train
@@ -95,9 +95,9 @@ class GetDataset(Dataset):
         self.roll = params['roll']
         self._get_files_stats(file_path)
         self.add_noise = params['add_noise'] if train else False
-        self.p_means = h5py.File('/hkfs/work/workspace/scratch/ke4365-pangu/PANGU_ERA5_data_v0/static/pressure_means.h5')
-        self.s_means = h5py.File('/hkfs/work/workspace/scratch/ke4365-pangu/PANGU_ERA5_data_v0/static/surface_means.h5')
-
+        self.p_means = h5py.File(params['pressure_static_data_path'])
+        self.s_means = h5py.File(params['surface_static_data_path'])
+        self.patch_size = patch_size
         self.device = device
         print("dEVICE FOUND IS", device)
         try:
@@ -146,12 +146,10 @@ class GetDataset(Dataset):
     
     def __getitem__(self, global_idx, normalize=True):
         # TODO: not yet safety checked for edge cases or other errors
-        # Doesn't yet allow for different dt times as in PGW
+        # TODO: Not compatible (from the data aspect) with different dt times as in PGW
         year_idx  = int(global_idx/self.n_samples_per_year) #which year we are on
         local_idx = int(global_idx%self.n_samples_per_year) #which sample in that year we are on - determines indices for centering
 
-        #y_roll = np.random.randint(0, 1440) if self.train else 0#roll image in y direction
-    
         #open image file
         if self.files_pressure[year_idx] is None:
             self._open_pressure_file(year_idx)
@@ -163,29 +161,42 @@ class GetDataset(Dataset):
         target_step = local_idx + step
         if target_step == self.n_samples_per_year:
             target_step = local_idx
-        #if we are not at least self.dt*n_history timesteps into the prediction
-        #if local_idx < self.dt*self.n_history:
-         #   local_idx += self.dt*self.n_history
-    
-            #if we are on the last image in a year predict identity, else predict next timestep
-         #   step = 0 if local_idx >= self.n_samples_per_year-self.dt else self.dt
-        
-        #if self.train and self.roll:
-        #  y_roll = random.randint(0, self.img_shape_y)
-        #else:
-        #  y_roll = 0
+
         if normalize:
             t1 = torch.as_tensor((self.files_pressure[year_idx]['fields'][local_idx] - self.p_means['mean']) / self.p_means['std_dev'])
             t2 = torch.as_tensor((self.files_surface[year_idx]['fields'][local_idx] - self.s_means['mean']) / self.s_means['std_dev'])
             t3 = torch.as_tensor((self.files_pressure[year_idx]['fields'][target_step] - self.p_means['mean']) / self.p_means['std_dev'])
             t4 = torch.as_tensor((self.files_surface[year_idx]['fields'][target_step] - self.s_means['mean']) / self.s_means['std_dev'])
-            t1 = t1#.to(self.device)
-            t2 = t2#.to(self.device)
-            t3 = t3#.to(self.device)
-            t4 = t4#.to(self.device)
-            return t1, t2, t3, t4
         else:
-            return (self.files_pressure[year_idx]['fields'][local_idx], \
-                   self.files_surface[year_idx]['fields'][local_idx], \
-                   self.files_pressure[year_idx]['fields'][target_step], \
-                   self.files_surface[year_idx]['fields'][target_step])
+            t1 = self.files_pressure[year_idx]['fields'][local_idx]
+            t2 = self.files_surface[year_idx]['fields'][local_idx]
+            t3 = self.files_pressure[year_idx]['fields'][target_step]
+            t4 = self.files_surface[year_idx]['fields'][target_step]
+        
+        t1, t2, t3, t4 = self._pad_data(t1, t2, t3, t4)
+        return t1, t2, t3, t4
+
+        
+    def _pad_data(self, t1, t2, t3, t4):
+        # perform padding for patch embedding step
+        input_shape = t1.shape  # shape is (5 variables x 13 pressure levels x 721 latitude x 1440 longitude)
+        input_surface_shape = t2.shape
+        
+        
+        x1_pad    = (self.patch_size[0] - (input_shape[1] % self.patch_size[0])) % self.patch_size[0] // 2
+        x2_pad    = (self.patch_size[0] - (input_shape[1] % self.patch_size[0])) % self.patch_size[0] - x1_pad
+        y1_pad    = (self.patch_size[1] - (input_shape[2] % self.patch_size[1])) % self.patch_size[1] // 2
+        y2_pad    = (self.patch_size[1] - (input_shape[2] % self.patch_size[1])) % self.patch_size[1] - y1_pad
+        z1_pad    = (self.patch_size[2] - (input_shape[3] % self.patch_size[2])) % self.patch_size[2] // 2
+        z2_pad    = (self.patch_size[2] - (input_shape[3] % self.patch_size[2])) % self.patch_size[2] - z1_pad
+
+        # pad pressure fields input and output
+        t1 = torch.nn.functional.pad(t1, pad=(z1_pad, z2_pad, y1_pad, y2_pad, x1_pad, x2_pad), mode='constant', value=0)
+        t3 = torch.nn.functional.pad(t3, pad=(z1_pad, z2_pad, y1_pad, y2_pad, x1_pad, x2_pad), mode='constant', value=0)
+        
+        # pad 
+        t2  = torch.nn.functional.pad(t2, pad=(z1_pad, z2_pad, y1_pad, y2_pad), mode='constant', value=0)
+        t4  = torch.nn.functional.pad(t4, pad=(z1_pad, z2_pad, y1_pad, y2_pad), mode='constant', value=0)
+
+        return t1, t2, t3, t4
+    

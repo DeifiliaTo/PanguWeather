@@ -84,7 +84,7 @@ class PanguModel(nn.Module):
     # Upsample and downsample
     self.upsample = UpSample(self.C*2, self.C)
 
-    self.downsample = DownSample(self.C)
+    self.downsample = DownSample(self.C, patch_size=patch_size[1:])
     
     # Patch Recovery
     self._output_layer = PatchRecovery(self.patch_size, dim=2*self.C) # added patch size
@@ -143,44 +143,18 @@ class PatchEmbedding(nn.Module):
     self.topography = self.topography.to(device)
     
   def forward(self, input, input_surface):
-    # Zero-pad the input
-    #input = Pad3D(input)
-    #input_surface = Pad2D(input_surface)
-    input_shape = input.shape
+    # Input should be padded already, according to the patch size
     input_surface_shape = input_surface.shape
-    
-    # padding dimensions of input start from 1 because dimension 0 is the number of data points
-    # TODO: There /has/ to be a better way
-    x1_pad    = (self.patch_size[0] - (input_shape[2] % self.patch_size[0])) % self.patch_size[0] // 2
-    x2_pad    = (self.patch_size[0] - (input_shape[2] % self.patch_size[0])) % self.patch_size[0] - x1_pad
-    y1_pad    = (self.patch_size[1] - (input_shape[3] % self.patch_size[1])) % self.patch_size[1] // 2
-    y2_pad    = (self.patch_size[1] - (input_shape[3] % self.patch_size[1])) % self.patch_size[1] - y1_pad
-    z1_pad    = (self.patch_size[2] - (input_shape[4] % self.patch_size[2])) % self.patch_size[2] // 2
-    z2_pad    = (self.patch_size[2] - (input_shape[4] % self.patch_size[2])) % self.patch_size[2] - z1_pad
-
-    input = torch.nn.functional.pad(input, pad=(z1_pad, z2_pad, y1_pad, y2_pad, x1_pad, x2_pad), mode='constant', value=0)
-        
-    # dimensions of surface path = dimensions of patch size[1:]
-    x1_pad    = (self.patch_size[1] - (input_surface_shape[2] % self.patch_size[1])) % self.patch_size[1] // 2
-    x2_pad    = (self.patch_size[1] - (input_surface_shape[2] % self.patch_size[1])) % self.patch_size[1] - x1_pad
-    y1_pad    = (self.patch_size[2] - (input_surface_shape[3] % self.patch_size[2])) % self.patch_size[2] // 2
-    y2_pad    = (self.patch_size[2] - (input_surface_shape[3] % self.patch_size[2])) % self.patch_size[2] - y1_pad
-    
-    input_surface  = torch.nn.functional.pad(input_surface, pad=(y1_pad, y2_pad, x1_pad, x2_pad), mode='constant', value=0)
     
     # Apply a linear projection for patch_size[0]*patch_size[1]*patch_size[2] patches, patch_size = (2, 4, 4) as in the original paper
     input = self.conv(input)
 
     # Add three constant fields to the surface fields
-    # input_surface =  Concatenate(input_surface, self.land_mask, self.soil_type, self.topography)    
     # Need to broadcast in this case because we are copying the data over more than 1 dimension
-    # TODO: verify?
     # Broadcast to 4D data
-    # Don't rewrite definition of self.__ for now
-    # --> to deal with different epochs with different amounts of data
-    land_mask = torch.broadcast_to(self.land_mask,   (input_surface.shape[0], 1, input_surface.shape[2], input_surface.shape[3]))
-    soil_type = torch.broadcast_to(self.soil_type,   (input_surface.shape[0], 1, input_surface.shape[2], input_surface.shape[3]))
-    topography = torch.broadcast_to(self.topography, (input_surface.shape[0], 1, input_surface.shape[2], input_surface.shape[3]))
+    land_mask = torch.broadcast_to(self.land_mask,   (input_surface_shape[0], 1, input_surface_shape[2], input_surface_shape[3]))
+    soil_type = torch.broadcast_to(self.soil_type,   (input_surface_shape[0], 1, input_surface_shape[2], input_surface_shape[3]))
+    topography = torch.broadcast_to(self.topography, (input_surface_shape[0], 1, input_surface_shape[2], input_surface_shape[3]))
     
     input_surface = torch.cat((input_surface, land_mask, soil_type, topography), dim=1)
 
@@ -188,12 +162,13 @@ class PatchEmbedding(nn.Module):
     input_surface = self.conv_surface(input_surface)
 
     # Concatenate the input in the pressure level, i.e., in Z dimension
-#    x = Concatenate(input, input_surface)
     input_surface = input_surface.unsqueeze(2) # performs broadcasting to add a dimension
     x = torch.cat((input, input_surface), dim=2)
 
     # Reshape x for calculation of linear projections
+    # Dimensions: (nData, pressure levels, latitude, longitude, fields)
     x = permute(x, (0, 2, 3, 4, 1))
+    # Dimensions: (nData, pressure level * latitude * longitude, fields)
     x = reshape(x, shape=(x.shape[0], x.shape[1]*x.shape[2]*x.shape[3], x.shape[-1]))
     
     return x
@@ -210,26 +185,26 @@ class PatchRecovery(nn.Module):
   def forward(self, x, Z, H, W):
     # The inverse operation of the patch embedding operation, patch_size = (2, 4, 4) as in the original paper
     # Reshape x back to three dimensions
+    # Dimensions: (nData, pressure level * latitude * longitude, fields)
     x = permute(x, (0, 2, 1))
+    # Dimensions: (nData, fields, pressure level, latitude, longitude)
     x = reshape(x, shape=(x.shape[0], x.shape[1], Z, H, W))
 
     # Call the transposed convolution
     output = self.conv(x[:, :, 1:, :, :])
     output_surface = self.conv_surface(x[:, :, 0, :, :])
 
-    # Crop the output to remove zero-paddings
-    output = output[:, :, 1:, 1:-2, :]
-    output_surface = output_surface[:, :, 1:-2, :]
+    # Recall: Output is still padded. Cropping only occurs outside of training loop.
     return output, output_surface
 
 class DownSample(nn.Module):
-  def __init__(self, dim):
+  def __init__(self, dim, patch_size=(4,4)):
     '''Down-sampling operation'''
     super().__init__()
     # A linear function and a layer normalization
     self.linear = Linear(4*dim, 2*dim, bias=False)
     self.norm = LayerNorm(4*dim)
-    self.patch_size = (2, 2)
+    self.patch_size = patch_size
   
   def forward(self, x, Z, H, W):
     # Reshape x to three dimensions for downsampling
@@ -242,8 +217,8 @@ class DownSample(nn.Module):
     z2_pad    = (self.patch_size[1] - (x.shape[3] % self.patch_size[1])) % self.patch_size[1] - z1_pad
 
     x = torch.nn.functional.pad(x, pad=(0, 0, z1_pad, z2_pad, y1_pad, y2_pad), mode='constant', value=0)
+    print("downsample padding", (z1_pad, z2_pad, y1_pad, y2_pad))
 
-    
     # Reorganize x to reduce the resolution: simply change the order and downsample from (8, 360, 182) to (8, 180, 91)
     Z, H, W = x.shape[1:4]
     # Reshape x to facilitate downsampling
@@ -286,7 +261,7 @@ class UpSample(nn.Module):
     x = reshape(x, shape=(x.shape[0], 8, 360, 182, x.shape[-1]))    
 
     # Crop the output to the input shape of the network
-    x = x[:, :, :, :-1, :] # How to communicate cropping efficiently between the down/upsampling dimensions?
+    x = x[:, :, :, 1:, :] # How to communicate cropping efficiently between the down/upsampling dimensions?
 
     # Reshape x back
     x = reshape(x, shape=(x.shape[0], x.shape[1]*x.shape[2]*x.shape[3], x.shape[-1]))
@@ -408,18 +383,16 @@ class EarthSpecificBlock(nn.Module):
       # Generate mask of attention masks
       # If two pixels are not adjacent, then mask the attention between them
       # Your can set the matrix element to -1000 when it is not adjacent, then add it to the attention
-    # Reorganize data to calculate window attention
-    # TODO: changed the Z, H, W to post-padding dimensions
-    # x_window = reshape(x, shape=(x.shape[0], Z//self.window_size[0], self.window_size[0], H // self.window_size[1], self.window_size[1], W // self.window_size[2], self.window_size[2], x.shape[-1]))
-#    x_window = reshape(x, shape=(x.shape[0], x.shape[1]//self.window_size[0], self.window_size[0], x.shape[2] // self.window_size[1], self.window_size[1], x.shape[3] // self.window_size[2], self.window_size[2], x.shape[-1]))
-#    x_window = permute(x_window, (0, 1, 3, 5, 2, 4, 6, 7))
-    x_window = self._window_partition(x, self.window_size) # nW * B, window_size[0], window_size[1], window_size[2], C
-    # Get data stacked in 3D cubes, which will further be used to calculated attention among each cube
+      # Reorganize data to calculate window attention 
+      x_window = self._window_partition(x, self.window_size) # nW * B, window_size[0], window_size[1], window_size[2], C
+    
+      
     
     if not roll:
       # e.g., zero matrix when you add mask to attention
       self.attn_mask = torch.zeros([x_window.shape[0], self.window_size[0]*self.window_size[1]*self.window_size[2], self.window_size[0]*self.window_size[1]*self.window_size[2]])
-                         
+    
+    # Get data stacked in 3D cubes, which will further be used to calculated attention among each cube                   
     x_window = x_window.view(-1, self.window_size[0]*self.window_size[1]*self.window_size[2], x_window.shape[-1])# nW * B, window_size[0], window_size[1], window_size[2], C
     
     # Apply 3D window attention with Earth-Specific bias
@@ -440,9 +413,6 @@ class EarthSpecificBlock(nn.Module):
     if roll:
       # Roll x back for half of the window
       x = torch.roll(x, shifts=(-self.window_size[0]//2, -self.window_size[1]//2, -self.window_size[2]//2), dims=(1, 2, 3))
-
-    # Crop the zero-padding
-    x = x[:, x2_pad:x2_pad+Z, y2_pad:y2_pad+H, z2_pad:z2_pad+W, :] # TODO: upon revision; double check ordering of x1:-x2 vs x2:-x1 based on definition of pad function
 
     # Reshape the tensor back to the input shape
     x = reshape(x, shape=(x.shape[0], x.shape[1]*x.shape[2]*x.shape[3], x.shape[4]))
@@ -551,8 +521,6 @@ class EarthAttention3D(nn.Module):
     coords[:, :, 0] *= (2 * self.window_size[2] - 1)*self.window_size[1]*self.window_size[1]
 
     # Sum up the indexes in three dimensions
-    
-
     self.position_index = sum(coords, dim=-1) # TODO: unsure about the sum command
                                               # Wh*Ww*Wd (product of window size)
     
@@ -565,7 +533,11 @@ class EarthAttention3D(nn.Module):
     # Record the original shape of the input BEFORE linear layer (correct?)
 
     # port mask onto device??? 
-    mask = mask.to(x.get_device())
+    if x.get_device() < 0: 
+      device = 'cpu'
+    else:
+      device = x.get_device()
+    mask = mask.to(device)
     original_shape = x.shape 
     B_ = original_shape[0]
     
@@ -589,7 +561,7 @@ class EarthAttention3D(nn.Module):
 #    EarthSpecificBias = reshape(EarthSpecificBias, shape = [1]+EarthSpecificBias.shape)
     
     # Add the Earth-Specific bias to the attention matrix
-    attention = attention + EarthSpecificBias#.unsqueeze(0) # TODO: unsqueeze "implementation" is from SWIN paper
+    attention = attention + EarthSpecificBias.unsqueeze(0) # TODO: unsqueeze "implementation" is from SWIN paper
 
     # Mask the attention between non-adjacent pixels, e.g., simply add -100 to the masked element.
     # from SWIN paper
