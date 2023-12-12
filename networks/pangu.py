@@ -84,7 +84,7 @@ class PanguModel(nn.Module):
     # Upsample and downsample
     self.upsample = UpSample(self.C*2, self.C)
 
-    self.downsample = DownSample(self.C, patch_size=patch_size[1:])
+    self.downsample = DownSample(self.C, downsampling=(2,2))
     
     # Patch Recovery
     self._output_layer = PatchRecovery(self.patch_size, dim=2*self.C) # added patch size
@@ -100,7 +100,7 @@ class PanguModel(nn.Module):
     x = self.layer1(x, 8, 360, 181) 
     
     # Store the tensor for skip-connection
-    skip = x
+    skip = x.clone()
     
     # Downsample from (8, 360, 181) to (8, 180, 91)
     x = self.downsample(x, 8, 360, 181)
@@ -119,7 +119,6 @@ class PanguModel(nn.Module):
     x = self.layer4(x, 8, 360, 181) 
 
     # Skip connect, in last dimension(C from 192 to 384)
-
     x = torch.cat((skip, x), dim=2)
 
     # Recover the output fields from patches
@@ -152,8 +151,8 @@ class PatchEmbedding(nn.Module):
     # Add three constant fields to the surface fields
     # Need to broadcast in this case because we are copying the data over more than 1 dimension
     # Broadcast to 4D data
-    land_mask = torch.broadcast_to(self.land_mask,   (input_surface_shape[0], 1, input_surface_shape[2], input_surface_shape[3]))
-    soil_type = torch.broadcast_to(self.soil_type,   (input_surface_shape[0], 1, input_surface_shape[2], input_surface_shape[3]))
+    land_mask  = torch.broadcast_to(self.land_mask,   (input_surface_shape[0], 1, input_surface_shape[2], input_surface_shape[3]))
+    soil_type  = torch.broadcast_to(self.soil_type,   (input_surface_shape[0], 1, input_surface_shape[2], input_surface_shape[3]))
     topography = torch.broadcast_to(self.topography, (input_surface_shape[0], 1, input_surface_shape[2], input_surface_shape[3]))
     
     input_surface = torch.cat((input_surface, land_mask, soil_type, topography), dim=1)
@@ -198,26 +197,25 @@ class PatchRecovery(nn.Module):
     return output, output_surface
 
 class DownSample(nn.Module):
-  def __init__(self, dim, patch_size=(4,4)):
+  def __init__(self, dim, downsampling=(2,2)):
     '''Down-sampling operation'''
     super().__init__()
     # A linear function and a layer normalization
     self.linear = Linear(4*dim, 2*dim, bias=False)
     self.norm = LayerNorm(4*dim)
-    self.patch_size = patch_size
+    self.downsampling = downsampling
   
   def forward(self, x, Z, H, W):
     # Reshape x to three dimensions for downsampling
     x = reshape(x, shape=(x.shape[0], Z, H, W, x.shape[-1]))
 
     # Padding the input to facilitate downsampling
-    y1_pad    = (self.patch_size[0] - (x.shape[2] % self.patch_size[0])) % self.patch_size[0] // 2
-    y2_pad    = (self.patch_size[0] - (x.shape[2] % self.patch_size[0])) % self.patch_size[0] - y1_pad
-    z1_pad    = (self.patch_size[1] - (x.shape[3] % self.patch_size[1])) % self.patch_size[1] // 2
-    z2_pad    = (self.patch_size[1] - (x.shape[3] % self.patch_size[1])) % self.patch_size[1] - z1_pad
+    y1_pad    = (self.downsampling[0] - (x.shape[2] % self.downsampling[0])) % self.downsampling[0] // 2
+    y2_pad    = (self.downsampling[0] - (x.shape[2] % self.downsampling[0])) % self.downsampling[0] - y1_pad
+    z1_pad    = (self.downsampling[1] - (x.shape[3] % self.downsampling[1])) % self.downsampling[1] // 2
+    z2_pad    = (self.downsampling[1] - (x.shape[3] % self.downsampling[1])) % self.downsampling[1] - z1_pad
 
     x = torch.nn.functional.pad(x, pad=(0, 0, z1_pad, z2_pad, y1_pad, y2_pad), mode='constant', value=0)
-    print("downsample padding", (z1_pad, z2_pad, y1_pad, y2_pad))
 
     # Reorganize x to reduce the resolution: simply change the order and downsample from (8, 360, 182) to (8, 180, 91)
     Z, H, W = x.shape[1:4]
@@ -318,7 +316,6 @@ class EarthSpecificBlock(nn.Module):
     self.attention = EarthAttention3D(dim, heads, 0, self.window_size, input_shape).to(device)
 
     self.attn_mask = self._gen_mask_(Z=input_resolution[0], H=input_resolution[1], W=input_resolution[2]).to(device)
-    #self.register_buffer("attn_mask", attn_mask)
     self.input_resolution = input_resolution
 
   def _window_partition(self, x, window_size):
@@ -356,8 +353,9 @@ class EarthSpecificBlock(nn.Module):
     # Z = 8,
     # H = 360
     # W = 181
+
     # Save the shortcut for skip-connection
-    shortcut = x
+    shortcut = x.clone()     
 
     # Reshape input to three dimensions to calculate window attention
     x = reshape(x, shape=(x.shape[0], Z, H, W, x.shape[2]))
@@ -380,13 +378,11 @@ class EarthSpecificBlock(nn.Module):
       # Roll x for half of the window for 3 dimensions
       x = torch.roll(x, shifts=(self.window_size[0]//2, self.window_size[1]//2, self.window_size[2]//2), dims=(1, 2, 3))
     
-      # Generate mask of attention masks
-      # If two pixels are not adjacent, then mask the attention between them
-      # Your can set the matrix element to -1000 when it is not adjacent, then add it to the attention
-      # Reorganize data to calculate window attention 
-      x_window = self._window_partition(x, self.window_size) # nW * B, window_size[0], window_size[1], window_size[2], C
-    
-      
+    # Generate mask of attention masks
+    # If two pixels are not adjacent, then mask the attention between them
+    # Your can set the matrix element to -1000 when it is not adjacent, then add it to the attention
+    # Reorganize data to calculate window attention 
+    x_window = self._window_partition(x, self.window_size) # nW * B, window_size[0], window_size[1], window_size[2], C
     
     if not roll:
       # e.g., zero matrix when you add mask to attention
@@ -403,23 +399,23 @@ class EarthSpecificBlock(nn.Module):
 
     x = self._window_reverse(attn_windows, self.window_size, Z=x.shape[1], H=x.shape[2], W=x.shape[3])
 
-    # Reorganize data to original shapes
-    #x = reshape(x_window, shape=((-1, x.shape[1] // self.window_size[0], x.shape[2] // self.window_size[1], x.shape[3] // self.window_size[2], self.window_size[0], self.window_size[1], self.window_size[2], x_window.shape[-1])))
-    #x = permute(x, (0, 1, 4, 2, 5, 3, 6, 7))
-
     # Reshape the tensor back to its original shape
-    x = reshape(x, shape=ori_shape) # B, Z*H*W, C
+    x = reshape(x, shape=ori_shape) # B, Z, H, W, C
 
     if roll:
       # Roll x back for half of the window
       x = torch.roll(x, shifts=(-self.window_size[0]//2, -self.window_size[1]//2, -self.window_size[2]//2), dims=(1, 2, 3))
 
+    # Crop the zero padding
+    x = x[:, x2_pad:x2_pad+Z, y2_pad:y2_pad+H, z2_pad:z2_pad+W, :] # TODO: check ordering of x1:-x2 vs x2:-x1
+    
     # Reshape the tensor back to the input shape
     x = reshape(x, shape=(x.shape[0], x.shape[1]*x.shape[2]*x.shape[3], x.shape[4]))
 
     # Main calculation stages
     x = shortcut + self.drop_path(self.norm1(x))
     x = x + self.drop_path(self.norm2(self.linear(x)))
+
     return x
   
 
