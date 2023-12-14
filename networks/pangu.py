@@ -76,10 +76,11 @@ class PanguModel(nn.Module):
     self._input_layer = PatchEmbedding((2, 4, 4), dim=self.C, device=device)
 
     # Four basic layers
-    self.layer1 = EarthSpecificLayer(2, self.C, drop_list[:2], 6,  input_shape=[640, int(144/2)], device=device, input_resolution=(8, 360, 192))
-    self.layer2 = EarthSpecificLayer(3, 2*self.C, drop_list[2:], 12, input_shape=[240, int(96/2)], device=device, input_resolution=(8, 180, 96)) # changed from [6:]. check. # Reduced number of layers for simplicity
-    self.layer3 = EarthSpecificLayer(3, 2*self.C, drop_list[2:], 12, input_shape=[240, int(96/2)], device=device, input_resolution=(8, 180, 96)) # changed from [6:]. check. # Reduced number of layers for simplicity
-    self.layer4 = EarthSpecificLayer(2, self.C, drop_list[:2], 6,  input_shape=[640, int(144/2)], device=device, input_resolution=(8, 360, 192))
+    # Vorher: input_shape = [620, 72]
+    self.layer1 = EarthSpecificLayer(2, self.C, drop_list[:2], 6,  input_shape=[8, 186], device=device, input_resolution=(8, 186, 360))
+    self.layer2 = EarthSpecificLayer(3, 2*self.C, drop_list[2:], 12, input_shape=[240, int(48)], device=device, input_resolution=(8, 96, 180)) # changed from [6:]. check. # Reduced number of layers for simplicity
+    self.layer3 = EarthSpecificLayer(3, 2*self.C, drop_list[2:], 12, input_shape=[240, int(48)], device=device, input_resolution=(8, 96, 180)) # changed from [6:]. check. # Reduced number of layers for simplicity
+    self.layer4 = EarthSpecificLayer(2, self.C, drop_list[:2], 6,  input_shape=[620, int(144/2)], device=device, input_resolution=(8, 186, 360))
 
     # Upsample and downsample
     self.upsample = UpSample(self.C*2, self.C)
@@ -97,26 +98,26 @@ class PanguModel(nn.Module):
 
     # Encoder, composed of two layers
     # Layer 1, shape (8, 360, 181, C), C = 192 as in the original paper
-    x = self.layer1(x, 8, 360, 181) 
+    x = self.layer1(x, 8, 181, 360) 
     
     # Store the tensor for skip-connection
     skip = x.clone()
     
     # Downsample from (8, 360, 181) to (8, 180, 91)
-    x = self.downsample(x, 8, 360, 181)
+    x = self.downsample(x, 8, 181, 360)
     
     # Layer 2, shape (8, 180, 91, 2C), C = 192 as in the original paper
-    x = self.layer2(x, 8, 180, 91) 
+    x = self.layer2(x, 8, 91, 180) 
 
     # Decoder, composed of two layers
     # Layer 3, shape (8, 180, 91, 2C), C = 192 as in the original paper
-    x = self.layer3(x, 8, 180, 91) 
+    x = self.layer3(x, 8, 91, 180) 
 
     # Upsample from (8, 180, 91) to (8, 360, 181)
     x = self.upsample(x)
 
     # Layer 4, shape (8, 360, 181, 2C), C = 192 as in the original paper
-    x = self.layer4(x, 8, 360, 181) 
+    x = self.layer4(x, 8, 181, 360) 
 
     # Skip connect, in last dimension(C from 192 to 384)
     x = torch.cat((skip, x), dim=2)
@@ -202,6 +203,7 @@ class DownSample(nn.Module):
     super().__init__()
     # A linear function and a layer normalization
     self.linear = Linear(4*dim, 2*dim, bias=False)
+
     self.norm = LayerNorm(4*dim)
     self.downsampling = downsampling
   
@@ -252,15 +254,14 @@ class UpSample(nn.Module):
 
     # Reorganize x to increase the resolution: simply change the order and upsample from (8, 180, 91) to (8, 360, 182)
     # Reshape x to facilitate upsampling.
-    x = reshape(x, shape=(x.shape[0], 8, 180, 91, 2, 2, x.shape[-1]//4))
+    x = reshape(x, shape=(x.shape[0], 8, 91, 180, 2, 2, x.shape[-1]//4))
     # Change the order of x
     x = permute(x, (0,1,2,4,3,5,6))
     # Reshape to get Tensor with a resolution of (8, 360, 182)
-    x = reshape(x, shape=(x.shape[0], 8, 360, 182, x.shape[-1]))    
+    x = reshape(x, shape=(x.shape[0], 8, 182, 360, x.shape[-1]))    
 
     # Crop the output to the input shape of the network
-    x = x[:, :, :, 1:, :] # How to communicate cropping efficiently between the down/upsampling dimensions?
-
+    x = x[:, :, 1:, :, :] # How to communicate cropping efficiently between the down/upsampling dimensions?
     # Reshape x back
     x = reshape(x, shape=(x.shape[0], x.shape[1]*x.shape[2]*x.shape[3], x.shape[-1]))
 
@@ -315,7 +316,9 @@ class EarthSpecificBlock(nn.Module):
     self.linear = MLP(dim, 0).to(device)
     self.attention = EarthAttention3D(dim, heads, 0, self.window_size, input_shape).to(device)
 
+    # Only generate masks one time @ initialization
     self.attn_mask = self._gen_mask_(Z=input_resolution[0], H=input_resolution[1], W=input_resolution[2]).to(device)
+    self.zero_mask = torch.zeros(self.attn_mask.shape)
     self.input_resolution = input_resolution
 
   def _window_partition(self, x, window_size):
@@ -328,6 +331,7 @@ class EarthSpecificBlock(nn.Module):
         windows: (num_windows*B, window_size, window_size, C)
     """
     B, Z, H, W, C = x.shape
+    print("in window partition,", B, Z, H, W, C)
     x = x.view(B, Z // window_size[0], window_size[0], H // window_size[1], window_size[1], W // window_size[2], window_size[2], C)
     windows = x.permute(0, 1, 3, 5, 2, 4, 6, 7).contiguous().view(-1, window_size[0], window_size[1], window_size[2], C)
     return windows
@@ -359,7 +363,7 @@ class EarthSpecificBlock(nn.Module):
 
     # Reshape input to three dimensions to calculate window attention
     x = reshape(x, shape=(x.shape[0], Z, H, W, x.shape[2]))
-        
+    
     # Zero-pad input if needed
     # TODO: padding according to window size. Correct?
     x1_pad    = (self.window_size[0] - (x.shape[1] % self.window_size[0])) % self.window_size[0] // 2
@@ -384,16 +388,16 @@ class EarthSpecificBlock(nn.Module):
     # Reorganize data to calculate window attention 
     x_window = self._window_partition(x, self.window_size) # nW * B, window_size[0], window_size[1], window_size[2], C
     
-    if not roll:
-      # e.g., zero matrix when you add mask to attention
-      self.attn_mask = torch.zeros([x_window.shape[0], self.window_size[0]*self.window_size[1]*self.window_size[2], self.window_size[0]*self.window_size[1]*self.window_size[2]])
-    
     # Get data stacked in 3D cubes, which will further be used to calculated attention among each cube                   
     x_window = x_window.view(-1, self.window_size[0]*self.window_size[1]*self.window_size[2], x_window.shape[-1])# nW * B, window_size[0], window_size[1], window_size[2], C
     
     # Apply 3D window attention with Earth-Specific bias
-    # x_window = self.attention(x, mask) #TODO: check
-    attn_windows  = self.attention(x_window, self.attn_mask)
+    
+    if roll:
+      attn_windows  = self.attention(x_window, self.attn_mask)
+    else:
+      attn_windows  = self.attention(x_window, self.zero_mask)
+
     # TODO: using modified implementation from SWIN to merge windows
     attn_windows = attn_windows.view(-1, self.window_size[0], self.window_size[1], self.window_size[2], x.shape[-1])
 
@@ -420,7 +424,7 @@ class EarthSpecificBlock(nn.Module):
   
 
   def _gen_mask_(self, Z, H, W):
-    
+    print("Z, H, W in gen mask", Z, H, W)
     img_mask = torch.zeros((1, Z, H, W, 1))  # 1 Z H W 1
     z_slices = (slice(0, -self.window_size[0]),
                 slice(-self.window_size[0], -self.window_size[0]//2),
@@ -542,22 +546,23 @@ class EarthAttention3D(nn.Module):
     # reshape the data to calculate multi-head attention
     qkv = reshape(x, shape=(x.shape[0], x.shape[1], 3, self.head_number, self.dim // self.head_number)) 
     query, key, value = permute(qkv, (2, 0, 3, 1, 4))
+
     # Scale the attention
     query = query * self.scale
 
     # Calculated the attention, a learnable bias is added to fix the nonuniformity of the grid.
+    # Attention shape: nB * nWindows, nHeads, N, N (N = W0*W1*W2)
     attention = (query @ key.transpose(-2, -1)) # @ denotes matrix multiplication
   
     # self.earth_specific_bias is a set of neural network parameters to optimize. 
-    EarthSpecificBias = self.earth_specific_bias[self.position_index]
+    EarthSpecificBias = self.earth_specific_bias[self.position_index] 
 
     # Reshape the learnable bias to the same shape as the attention matrix
     EarthSpecificBias = reshape(EarthSpecificBias, shape=(self.window_size[0]*self.window_size[1]*self.window_size[2], self.window_size[0]*self.window_size[1]*self.window_size[2], self.type_of_windows, self.head_number))
     EarthSpecificBias = permute(EarthSpecificBias, (2, 3, 0, 1))
-#    EarthSpecificBias = reshape(EarthSpecificBias, shape = [1]+EarthSpecificBias.shape)
-    
+
     # Add the Earth-Specific bias to the attention matrix
-    attention = attention + EarthSpecificBias.unsqueeze(0) # TODO: unsqueeze "implementation" is from SWIN paper
+    attention = attention + EarthSpecificBias # TODO: unsqueeze "implementation" is from SWIN paper
 
     # Mask the attention between non-adjacent pixels, e.g., simply add -100 to the masked element.
     # from SWIN paper
@@ -568,8 +573,6 @@ class EarthAttention3D(nn.Module):
     attention = attention + mask.unsqueeze(1).unsqueeze(0)
     attention = attention.view(-1, self.head_number, N, N)
 
-    # attention = self.mask_attention(attention, mask) # TODO: add mask_attention after understanding mask
-    #attention  = self.attention(attention, mask) # hm?
     attention = self.Softmax(attention)
     attention = self.dropout(attention)
 
