@@ -78,8 +78,8 @@ class PanguModel(nn.Module):
     # Four basic layers
     # Vorher: input_shape = [620, 72]
     self.layer1 = EarthSpecificLayer(2, self.C, drop_list[:2], 6,  input_shape=[8, 186], device=device, input_resolution=(8, 186, 360))
-    self.layer2 = EarthSpecificLayer(3, 2*self.C, drop_list[2:], 12, input_shape=[240, int(48)], device=device, input_resolution=(8, 96, 180)) # changed from [6:]. check. # Reduced number of layers for simplicity
-    self.layer3 = EarthSpecificLayer(3, 2*self.C, drop_list[2:], 12, input_shape=[240, int(48)], device=device, input_resolution=(8, 96, 180)) # changed from [6:]. check. # Reduced number of layers for simplicity
+    self.layer2 = EarthSpecificLayer(6, 2*self.C, drop_list[2:], 12, input_shape=[240, int(48)], device=device, input_resolution=(8, 96, 180)) # changed from [6:]. check. # Reduced number of layers for simplicity
+    self.layer3 = EarthSpecificLayer(6, 2*self.C, drop_list[2:], 12, input_shape=[240, int(48)], device=device, input_resolution=(8, 96, 180)) # changed from [6:]. check. # Reduced number of layers for simplicity
     self.layer4 = EarthSpecificLayer(2, self.C, drop_list[:2], 6,  input_shape=[620, int(144/2)], device=device, input_resolution=(8, 186, 360))
 
     # Upsample and downsample
@@ -289,7 +289,6 @@ class EarthSpecificLayer(nn.Module):
     
 
   def forward(self, x, Z, H, W):
-    
     for i in range(self.depth):
       # Roll the input every two blocks
       if i % 2 == 0:
@@ -331,7 +330,6 @@ class EarthSpecificBlock(nn.Module):
         windows: (num_windows*B, window_size, window_size, C)
     """
     B, Z, H, W, C = x.shape
-    print("in window partition,", B, Z, H, W, C)
     x = x.view(B, Z // window_size[0], window_size[0], H // window_size[1], window_size[1], W // window_size[2], window_size[2], C)
     windows = x.permute(0, 1, 3, 5, 2, 4, 6, 7).contiguous().view(-1, window_size[0], window_size[1], window_size[2], C)
     return windows
@@ -423,8 +421,8 @@ class EarthSpecificBlock(nn.Module):
     return x
   
 
+  # Windows that wrap around w dimension do not get masked
   def _gen_mask_(self, Z, H, W):
-    print("Z, H, W in gen mask", Z, H, W)
     img_mask = torch.zeros((1, Z, H, W, 1))  # 1 Z H W 1
     z_slices = (slice(0, -self.window_size[0]),
                 slice(-self.window_size[0], -self.window_size[0]//2),
@@ -432,16 +430,13 @@ class EarthSpecificBlock(nn.Module):
     h_slices = (slice(0, -self.window_size[1]),
                 slice(-self.window_size[1], -self.window_size[1]//2),
                 slice(-self.window_size[1]//2, None))
-    w_slices = (slice(0, -self.window_size[2]),
-                slice(-self.window_size[2], -self.window_size[2]//2),
-                slice(-self.window_size[2]//2, None))
     
     cnt = 0
     for z in z_slices:
       for h in h_slices:
-          for w in w_slices:
-              img_mask[:, z, h, w, :] = cnt
-              cnt += 1
+          
+          img_mask[:, z, h, :, :] = cnt
+          cnt += 1
 
     mask_windows = self._window_partition(img_mask, self.window_size)  # nW, window_size, window_size, 1
     mask_windows = mask_windows.view(-1, self.window_size[0] * self.window_size[1]* self.window_size[2])
@@ -459,7 +454,7 @@ class EarthAttention3D(nn.Module):
 
     # Initialize several operations
     # Should make sense to use dim*3 to generate the vectors for a qkv matrix
-    self.linear1 = Linear(dim, dim*3, bias=True) #dim = 3 
+    self.linear1 = Linear(dim, dim*3, bias=True)
     self.linear2 = Linear(dim, dim)
     self.Softmax = Softmax(dim=-1)
     self.dropout = Dropout(dropout_rate)
@@ -538,9 +533,13 @@ class EarthAttention3D(nn.Module):
     else:
       device = x.get_device()
     mask = mask.to(device)
+
+    # x shape: (B*nWindows, W0, W1, W2, C)
     original_shape = x.shape 
     B_ = original_shape[0]
+    B  = B_ // self.type_of_windows
     
+    # x shape: (B*nWindows, W0*W1*W2, C)
     x = self.linear1(x)
 
     # reshape the data to calculate multi-head attention
@@ -555,10 +554,10 @@ class EarthAttention3D(nn.Module):
     attention = (query @ key.transpose(-2, -1)) # @ denotes matrix multiplication
   
     # self.earth_specific_bias is a set of neural network parameters to optimize. 
-    EarthSpecificBias = self.earth_specific_bias[self.position_index] 
+    EarthSpecificBias = self.earth_specific_bias[self.position_index.repeat(attention.shape[0] // self.type_of_windows)] 
 
     # Reshape the learnable bias to the same shape as the attention matrix
-    EarthSpecificBias = reshape(EarthSpecificBias, shape=(self.window_size[0]*self.window_size[1]*self.window_size[2], self.window_size[0]*self.window_size[1]*self.window_size[2], self.type_of_windows, self.head_number))
+    EarthSpecificBias = reshape(EarthSpecificBias, shape=(self.window_size[0]*self.window_size[1]*self.window_size[2], self.window_size[0]*self.window_size[1]*self.window_size[2], -1, self.head_number))
     EarthSpecificBias = permute(EarthSpecificBias, (2, 3, 0, 1))
 
     # Add the Earth-Specific bias to the attention matrix
