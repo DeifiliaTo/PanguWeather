@@ -36,46 +36,61 @@ params['roll'] = False
 params['add_noise'] = False
 params['batch_size'] = 2
 params['num_data_workers'] = 4
+params['data_distributed'] = True
 
 rank = int(os.getenv("SLURM_PROCID"))       # Get individual process ID.
 world_size = int(os.getenv("SLURM_NTASKS")) # Get overall number of processes.
 slurm_job_gpus = os.getenv("SLURM_JOB_GPUS")
 slurm_localid = int(os.getenv("SLURM_LOCALID"))
 gpus_per_node = torch.cuda.device_count()
-gpu = rank % gpus_per_node
-assert gpu == slurm_localid
-device = f"cuda:{slurm_localid}"
-torch.cuda.set_device(device)
+
+try:
+    if slurm_job_gpus > 0:
+        gpu = rank % gpus_per_node
+        assert gpu == slurm_localid
+        device = f"cuda:{slurm_localid}"
+        torch.cuda.set_device(device)
     
-# Initialize DDP.
-dist.init_process_group(backend="nccl", rank=rank, world_size=world_size, init_method="env://")
+    # Initialize DDP.
+    if params['data_distributed']:
+        dist.init_process_group(backend="nccl", rank=rank, world_size=world_size, init_method="env://")
+
+except:
+    # Initialize DDP.
+    if params['data_distributed']:
+        dist.init_process_group(backend="gloo", rank=rank, world_size=world_size, init_method="env://")
+    # set device to CPU
+    device = 'cpu'
+
 if dist.is_initialized(): 
     print(f"Rank {rank}/{world_size}: Process group initialized with torch rank {torch.distributed.get_rank()} and torch world size {torch.distributed.get_world_size()}.")
+    
 else:
     print("Running in serial")
 
-
+# Define patch size, data loader, model
 patch_size = (2, 4, 4)
-
 train_data_loader, train_dataset, train_sampler = get_data_loader(params, params['train_data_path'], dist.is_initialized(), train=True, device=device, patch_size=patch_size)
-
 model = PanguModel(device=device, C=192, patch_size=patch_size)
 model = model.float().to(device)
 
-if dist.is_initialized():
+# DDP wrapper if GPUs are available
+if dist.is_initialized() and gpus_per_node > 0:
     model = DDP( # Wrap model with DDP.
             model, 
             device_ids=[slurm_localid], 
             output_device=slurm_localid
     )
-    
 
 optimizer = torch.optim.Adam(model.parameters(), lr=5e-4, weight_decay=3e-6)
-
-
 start = time.perf_counter() # Measure training time.
-rank = dist.get_rank()
-world_size = dist.get_world_size()
+
+if dist.is_initialized():
+    rank = dist.get_rank()
+    world_size = dist.get_world_size()
+else:
+    rank = 0
+    world_size = 1
 
 loss_history = []
 
@@ -99,7 +114,7 @@ for epoch in range(2):
 
         # We use the MAE loss to train the model
         # The weight of surface loss is 0.25
-        # Different weight can be applied for differen fields if needed
+        # Different weight can be applied for different fields if needed
         loss = 0.75 * loss1(output, target) + 0.25 * loss2(output_surface, target_surface)
         # Call the backward algorithm and calculate the gradient of parameters
         optimizer.zero_grad()
@@ -107,7 +122,6 @@ for epoch in range(2):
         
         # Update model parameters with Adam optimizer
         # The learning rate is 5e-4 as in the paper, while the weight decay is 3e-6
-        # A example solution is using torch.optim.adam
         optimizer.step()
 
         dist.all_reduce(loss) # Allreduce rank-local mini-batch losses.
