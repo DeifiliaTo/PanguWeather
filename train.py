@@ -44,18 +44,17 @@ slurm_job_gpus = os.getenv("SLURM_JOB_GPUS")
 slurm_localid = int(os.getenv("SLURM_LOCALID"))
 gpus_per_node = torch.cuda.device_count()
 
-try:
-    if slurm_job_gpus > 0:
-        gpu = rank % gpus_per_node
-        assert gpu == slurm_localid
-        device = f"cuda:{slurm_localid}"
-        torch.cuda.set_device(device)
+if slurm_job_gpus is not None:
+    gpu = rank % gpus_per_node
+    assert gpu == slurm_localid
+    device = f"cuda:{slurm_localid}"
+    torch.cuda.set_device(device)
     
     # Initialize DDP.
     if params['data_distributed']:
         dist.init_process_group(backend="nccl", rank=rank, world_size=world_size, init_method="env://")
 
-except:
+else:
     # Initialize DDP.
     if params['data_distributed']:
         dist.init_process_group(backend="gloo", rank=rank, world_size=world_size, init_method="env://")
@@ -64,14 +63,14 @@ except:
 
 if dist.is_initialized(): 
     print(f"Rank {rank}/{world_size}: Process group initialized with torch rank {torch.distributed.get_rank()} and torch world size {torch.distributed.get_world_size()}.")
-    
 else:
     print("Running in serial")
 
 # Define patch size, data loader, model
 patch_size = (2, 4, 4)
+C          = 192
 train_data_loader, train_dataset, train_sampler = get_data_loader(params, params['train_data_path'], dist.is_initialized(), train=True, device=device, patch_size=patch_size)
-model = PanguModel(device=device, C=192, patch_size=patch_size)
+model = PanguModel(device=device, C=C, patch_size=patch_size)
 model = model.float().to(device)
 
 # DDP wrapper if GPUs are available
@@ -79,7 +78,8 @@ if dist.is_initialized() and gpus_per_node > 0:
     model = DDP( # Wrap model with DDP.
             model, 
             device_ids=[slurm_localid], 
-            output_device=slurm_localid
+            output_device=slurm_localid,
+            find_unused_parameters=True
     )
 
 optimizer = torch.optim.Adam(model.parameters(), lr=5e-4, weight_decay=3e-6)
@@ -95,7 +95,6 @@ else:
 loss_history = []
 
 for epoch in range(2):
-    #train_data_loader.set_epoch(epoch)
     model.train()
     
     loss1 = torch.nn.L1Loss()
