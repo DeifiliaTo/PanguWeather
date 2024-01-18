@@ -10,10 +10,9 @@ from torch.nn import Linear, Conv3d, Conv2d, ConvTranspose3d, ConvTranspose2d
 # Softmax: Softmax function, see Pytorch API or Tensorflow API
 #from torch.nn import GeLU, DropOut, DropPath, LayerNorm, Softmax
 from torch.nn import GELU, Dropout, LayerNorm, Softmax
-from networks.Drop import DropPath
+#from networks.Drop import DropPath
 from torch import nn
-# NOTE: libraries where exact equivalents couldn't be found.
-# from torch.nn import DropPath # Should be from timm
+from timm.layers import DropPath, trunc_normal_
 
 # Common functions for roll, pad, and crop, depends on the data structure of your software environment
 #from torch.nn import roll3D, pad3D, pad2D, Crop3D, Crop2D
@@ -41,15 +40,13 @@ from torch import arange, zeros
 # TensorSum: a tensor version of numpy.sum
 # TensorAbs: a tensor version of numpy.abs
 # Concatenate: a tensor version of numpy.concatenate
-from torch import linspace, meshgrid, stack, flatten, sum, abs, concat
+from torch import linspace, meshgrid, stack, flatten, sum
 
 # Common functions for training models
 # LoadModel and SaveModel: Load and save the model, some APIs may require further adaptation to hardwares
 # Backward: Gradient backward to calculate the gratitude of each parameters
 # UpdateModelParametersWithAdam: Use Adam to update parameters, e.g., torch.optim.Adam
 from torch import load
-# Backward, UpdateModelParametersWithAdam, SaveModel
-# TODO: Deal with these later, adapt to standard pytorch lingo
 
 # Custom functions to read your data from the disc
 # LoadData: Load the ERA5 data
@@ -73,14 +70,13 @@ class PanguModel(nn.Module):
     self.patch_size = patch_size
 
     # Patch embedding
-    self._input_layer = PatchEmbedding((2, 4, 4), dim=self.C, device=device)
+    self._input_layer = PatchEmbedding(patch_size, dim=self.C, device=device)
 
     # Four basic layers
-    # Vorher: input_shape = [620, 72]
     self.layer1 = EarthSpecificLayer(2, self.C, drop_list[:2], 6,  input_shape=[8, 186], device=device, input_resolution=(8, 186, 360))
-    self.layer2 = EarthSpecificLayer(6, 2*self.C, drop_list[2:], 12, input_shape=[240, int(48)], device=device, input_resolution=(8, 96, 180)) # changed from [6:]. check. # Reduced number of layers for simplicity
-    self.layer3 = EarthSpecificLayer(6, 2*self.C, drop_list[2:], 12, input_shape=[240, int(48)], device=device, input_resolution=(8, 96, 180)) # changed from [6:]. check. # Reduced number of layers for simplicity
-    self.layer4 = EarthSpecificLayer(2, self.C, drop_list[:2], 6,  input_shape=[620, int(144/2)], device=device, input_resolution=(8, 186, 360))
+    self.layer2 = EarthSpecificLayer(6, 2*self.C, drop_list[2:], 12, input_shape=[8, 96], device=device, input_resolution=(8, 96, 180))
+    self.layer3 = EarthSpecificLayer(6, 2*self.C, drop_list[2:], 12, input_shape=[8, 96], device=device, input_resolution=(8, 96, 180))
+    self.layer4 = EarthSpecificLayer(2, self.C, drop_list[:2], 6,  input_shape=[8, 186], device=device, input_resolution=(8, 186, 360))
 
     # Upsample and downsample
     self.upsample = UpSample(self.C*2, self.C)
@@ -181,7 +177,6 @@ class PatchRecovery(nn.Module):
     self.conv = ConvTranspose3d(in_channels=dim, out_channels=5, kernel_size=patch_size, stride=patch_size)
     self.conv_surface = ConvTranspose2d(in_channels=dim, out_channels=4, kernel_size=patch_size[1:], stride=patch_size[1:])
 
-  # TODO: figure out the ZHW dimensions! I'm not convinced.
   def forward(self, x, Z, H, W):
     # The inverse operation of the patch embedding operation, patch_size = (2, 4, 4) as in the original paper
     # Reshape x back to three dimensions
@@ -282,12 +277,10 @@ class EarthSpecificLayer(nn.Module):
     super().__init__()
     self.depth = depth
     self.dim = dim  # TODO : can remove dim l8r on?
-    self.blocks = []
-    # Construct basic blocks
-    for i in np.arange(depth): # is using np here ok?
-      self.blocks.append(EarthSpecificBlock(dim, drop_path_ratio_list[i], heads, input_shape=input_shape,device=device, input_resolution=input_resolution).to(device))
     
-
+    # Construct basic blocks
+    self.blocks = torch.nn.ModuleList([EarthSpecificBlock(dim, drop_path_ratio_list[i], heads, input_shape=input_shape,device=device, input_resolution=input_resolution).to(device) for i in torch.arange(depth)])    
+    
   def forward(self, x, Z, H, W):
     for i in range(self.depth):
       # Roll the input every two blocks
@@ -309,14 +302,14 @@ class EarthSpecificBlock(nn.Module):
     self.window_size = (2, 6, 12)
 
     # Initialize serveral operations
-    self.drop_path = DropPath(drop_prob=drop_path_ratio).to(device)
-    self.norm1 = LayerNorm(dim).to(device)
-    self.norm2 = LayerNorm(dim).to(device)
-    self.linear = MLP(dim, 0).to(device)
-    self.attention = EarthAttention3D(dim, heads, 0, self.window_size, input_shape).to(device)
+    self.drop_path = DropPath(drop_prob=drop_path_ratio)
+    self.norm1 = LayerNorm(dim)
+    self.norm2 = LayerNorm(dim)
+    self.linear = MLP(dim, 0)
+    self.attention = EarthAttention3D(dim, heads, 0, self.window_size, input_shape)
 
     # Only generate masks one time @ initialization
-    self.attn_mask = self._gen_mask_(Z=input_resolution[0], H=input_resolution[1], W=input_resolution[2]).to(device)
+    self.attn_mask = self._gen_mask_(Z=input_resolution[0], H=input_resolution[1], W=input_resolution[2])
     self.zero_mask = torch.zeros(self.attn_mask.shape)
     self.input_resolution = input_resolution
 
@@ -396,7 +389,6 @@ class EarthSpecificBlock(nn.Module):
     else:
       attn_windows  = self.attention(x_window, self.zero_mask)
 
-    # TODO: using modified implementation from SWIN to merge windows
     attn_windows = attn_windows.view(-1, self.window_size[0], self.window_size[1], self.window_size[2], x.shape[-1])
 
     x = self._window_reverse(attn_windows, self.window_size, Z=x.shape[1], H=x.shape[2], W=x.shape[3])
@@ -409,7 +401,7 @@ class EarthSpecificBlock(nn.Module):
       x = torch.roll(x, shifts=(-self.window_size[0]//2, -self.window_size[1]//2, -self.window_size[2]//2), dims=(1, 2, 3))
 
     # Crop the zero padding
-    x = x[:, x2_pad:x2_pad+Z, y2_pad:y2_pad+H, z2_pad:z2_pad+W, :] # TODO: check ordering of x1:-x2 vs x2:-x1
+    x = x[:, x2_pad:x2_pad+Z, y2_pad:y2_pad+H, z2_pad:z2_pad+W, :]
     
     # Reshape the tensor back to the input shape
     x = reshape(x, shape=(x.shape[0], x.shape[1]*x.shape[2]*x.shape[3], x.shape[4]))
@@ -481,7 +473,7 @@ class EarthAttention3D(nn.Module):
     self.earth_specific_bias = Parameter(self.earth_specific_bias)
 
     # Initialize the tensors using Truncated normal distribution
-    #trunc_normal_(self.earth_specific_bias, std=.02) #TODO: look at Swin transformers github
+    trunc_normal_(self.earth_specific_bias, std=.02) 
 
     # Construct position index to reuse self.earth_specific_bias
     self.position_index = self._construct_index()
@@ -516,9 +508,8 @@ class EarthAttention3D(nn.Module):
     coords[:, :, 0] *= (2 * self.window_size[2] - 1)*self.window_size[1]*self.window_size[1]
 
     # Sum up the indexes in three dimensions
-    self.position_index = sum(coords, dim=-1) # TODO: unsure about the sum command
-                                              # Wh*Ww*Wd (product of window size)
-    
+    self.position_index = sum(coords, dim=-1)
+                                                    
     # Flatten the position index to facilitate further indexing
     self.position_index = flatten(self.position_index)
     return self.position_index
@@ -561,7 +552,7 @@ class EarthAttention3D(nn.Module):
     EarthSpecificBias = permute(EarthSpecificBias, (2, 3, 0, 1))
 
     # Add the Earth-Specific bias to the attention matrix
-    attention = attention + EarthSpecificBias # TODO: unsqueeze "implementation" is from SWIN paper
+    attention = attention + EarthSpecificBias 
 
     # Mask the attention between non-adjacent pixels, e.g., simply add -100 to the masked element.
     # from SWIN paper
