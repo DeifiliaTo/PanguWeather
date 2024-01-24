@@ -18,9 +18,9 @@ def LoadConstantMask(patch_size, folder_path='constant_masks/'):
     soil_type  = (soil_type - np.mean(soil_type)) / np.std(soil_type)
     topography = (topography - np.mean(topography)) / np.std(topography)
     # Torch tensors
-    land_mask  = torch.tensor(data['land_mask.npy'])
-    soil_type  = torch.tensor(soil_type)
-    topography = torch.tensor(topography)
+    land_mask  = torch.tensor(data['land_mask.npy']).float()
+    soil_type  = torch.tensor(soil_type).float()
+    topography = torch.tensor(topography).float()
 
     # Check that the shapes of all the data are the same
     assert land_mask.shape == soil_type.shape == topography.shape, "Shapes of the three constant masks are not equal."

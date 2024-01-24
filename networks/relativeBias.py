@@ -36,13 +36,13 @@ class PanguModel(nn.Module):
     self._input_layer = PatchEmbedding(patch_size, dim=self.C, device=device)
 
     # Four basic layers
-    self.layer1 = EarthSpecificLayer(2, self.C, drop_list[:2], 6,  input_shape=[8, 186], device=device, input_resolution=(8, 186, 360))
-    self.layer2 = EarthSpecificLayer(6, 2*self.C, drop_list[2:], 12, input_shape=[8, 96], device=device, input_resolution=(8, 96, 180))
-    self.layer3 = EarthSpecificLayer(6, 2*self.C, drop_list[2:], 12, input_shape=[8, 96], device=device, input_resolution=(8, 96, 180))
-    self.layer4 = EarthSpecificLayer(2, self.C, drop_list[:2], 6,  input_shape=[8, 186], device=device, input_resolution=(8, 186, 360))
+    self.layer1 = EarthSpecificLayer(2, self.C, drop_list[:2], 6,  input_shape=[8, 186], device=device, input_resolution=(8, 186, 360), absolute_bias=False)
+    self.layer2 = EarthSpecificLayer(6, 2*self.C, drop_list[2:], 12, input_shape=[8, 96], device=device, input_resolution=(8, 96, 180), absolute_bias=False)
+    self.layer3 = EarthSpecificLayer(6, 2*self.C, drop_list[2:], 12, input_shape=[8, 96], device=device, input_resolution=(8, 96, 180), absolute_bias=False)
+    self.layer4 = EarthSpecificLayer(2, self.C, drop_list[:2], 6,  input_shape=[8, 186], device=device, input_resolution=(8, 186, 360), absolute_bias=False)
 
     # Upsample and downsample
-    self.upsample = UpSample(self.C*2, self.C, nHeight=8, nLat=91, nLon=180)
+    self.upsample = UpSample(self.C*2, self.C, 8, 180, 91)
 
     self.downsample = DownSample(self.C, downsampling=(2,2))
     
@@ -84,6 +84,7 @@ class PanguModel(nn.Module):
     # Recover the output fields from patches
     output, output_surface = self._output_layer(x, Z=8, H=181, W=360)
     return output, output_surface
+  
 
 def PerlinNoise():
   '''Generate random Perlin noise: we follow https://github.com/pvigier/perlin-numpy/ to calculate the perlin noise.'''

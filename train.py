@@ -1,21 +1,13 @@
 import networks.pangu as pangu
 import utils.data_loader_multifiles as data_loader_multifiles
 from utils.data_loader_multifiles import get_data_loader
-import pandas as pd
-from netCDF4 import Dataset as DS
-import numpy as np
 import torch
-import glob
-import logging
-import h5py
-from torch.utils.data import DataLoader, Dataset
 import matplotlib.pyplot as plt
 from importlib import reload  # Python 3.4
-import utils
 from networks.pangu import PanguModel as PanguModel
+from networks.relativeBias import PanguModel as RelativeBiasModel
 from utils.data_loader_multifiles import get_data_loader
 import torch
-from torch import arange
 import torch.distributed as dist
 import utils.data_loader_multifiles as data_loader_multifiles
 from utils.data_loader_multifiles import get_data_loader
@@ -39,7 +31,7 @@ params['batch_size'] = 2
 params['num_data_workers'] = 2
 params['data_distributed'] = True
 params['filetype'] = 'netcdf' # either hdf5 or netcdf
-params['num_epochs'] = 2
+params['num_epochs'] = 1
 num_epochs = params['num_epochs']
 
 rank = int(os.getenv("SLURM_PROCID"))       # Get individual process ID.
@@ -173,7 +165,7 @@ for epoch in range(num_epochs):
     if rank == 0:
         print(f'Epoch: {int(epoch+1):03d}/{int(num_epochs):03d} '
               f'Elapsed time: {end_epoch_time - start_epoch_time:04f}')
-    save_path = '/hkfs/work/workspace/scratch/ke4365-pangu/pangu-weather/trained_models/pangum1.pt'
+    save_path = '/hkfs/work/workspace/scratch/ke4365-pangu/pangu-weather/trained_models/pangurelbias.pt'
     torch.save(model.state_dict(), save_path)
    # model.eval()
 
