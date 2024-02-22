@@ -2,7 +2,7 @@ import sys
 sys.path.append("/hkfs/work/workspace/scratch/ke4365-pangu/pangu-weather/networks/")
 from Modules.Embedding import PatchEmbedding, PatchRecovery
 from Modules.Sampling import UpSample, DownSample
-from Modules.Attention import EarthSpecificLayer
+from Modules.Attention import EarthSpecificLayerAbsolute
 
 from torch import nn
 import torch.nn as nn
@@ -36,10 +36,10 @@ class PanguModel(nn.Module):
     self._input_layer = PatchEmbedding(patch_size, dim=self.C, device=device)
 
     # Four basic layers
-    self.layer1 = EarthSpecificLayer(2, self.C, drop_list[:2], 6,  input_shape=[8, 186], device=device, input_resolution=(8, 186, 360))
-    self.layer2 = EarthSpecificLayer(6, 2*self.C, drop_list[2:], 12, input_shape=[8, 96], device=device, input_resolution=(8, 96, 180))
-    self.layer3 = EarthSpecificLayer(6, 2*self.C, drop_list[2:], 12, input_shape=[8, 96], device=device, input_resolution=(8, 96, 180))
-    self.layer4 = EarthSpecificLayer(2, self.C, drop_list[:2], 6,  input_shape=[8, 186], device=device, input_resolution=(8, 186, 360))
+    self.layer1 = EarthSpecificLayerAbsolute(2, self.C, drop_list[:2], 6,  input_shape=[8, 186], device=device, input_resolution=(8, 186, 360), window_size=torch.tensor([2, 6, 12]))
+    self.layer2 = EarthSpecificLayerAbsolute(6, 2*self.C, drop_list[2:], 12, input_shape=[8, 96], device=device, input_resolution=(8, 96, 180), window_size=torch.tensor([2, 6, 12]))
+    self.layer3 = EarthSpecificLayerAbsolute(6, 2*self.C, drop_list[2:], 12, input_shape=[8, 96], device=device, input_resolution=(8, 96, 180), window_size=torch.tensor([2, 6, 12]))
+    self.layer4 = EarthSpecificLayerAbsolute(2, self.C, drop_list[:2], 6,  input_shape=[8, 186], device=device, input_resolution=(8, 186, 360), window_size=torch.tensor([2, 6, 12]))
 
     # Upsample and downsample
     self.upsample = UpSample(self.C*2, self.C, nHeight=8, nLat=91, nLon=180)

@@ -36,10 +36,10 @@ class PanguModel(nn.Module):
     self._input_layer = PatchEmbedding(patch_size, dim=self.C, device=device)
 
     # Four basic layers
-    self.layer1 = EarthSpecificLayerNoBias(2, self.C, drop_list[:2],   6,  input_shape=[8, 186], device=device, input_resolution=(8, 186, 360), absolute_bias=False)
-    self.layer2 = EarthSpecificLayerNoBias(6, 2*self.C, drop_list[2:], 12, input_shape=[8, 96],  device=device, input_resolution=(8, 96, 180),  absolute_bias=False)
-    self.layer3 = EarthSpecificLayerNoBias(6, 2*self.C, drop_list[2:], 12, input_shape=[8, 96],  device=device, input_resolution=(8, 96, 180),  absolute_bias=False)
-    self.layer4 = EarthSpecificLayerNoBias(2, self.C, drop_list[:2],   6,  input_shape=[8, 186], device=device, input_resolution=(8, 186, 360), absolute_bias=False)
+    self.layer1 = EarthSpecificLayerNoBias(2, self.C, drop_list[:2],   6,  input_shape=[8, 186], device=device, input_resolution=(8, 186, 360), window_size=torch.tensor([2, 6, 12]))
+    self.layer2 = EarthSpecificLayerNoBias(6, 2*self.C, drop_list[2:], 12, input_shape=[8, 96],  device=device, input_resolution=(8, 96, 180), window_size=torch.tensor([2, 6, 12]))
+    self.layer3 = EarthSpecificLayerNoBias(6, 2*self.C, drop_list[2:], 12, input_shape=[8, 96],  device=device, input_resolution=(8, 96, 180), window_size=torch.tensor([2, 6, 12]))
+    self.layer4 = EarthSpecificLayerNoBias(2, self.C, drop_list[:2],   6,  input_shape=[8, 186], device=device, input_resolution=(8, 186, 360), window_size=torch.tensor([2, 6, 12]))
 
     # Upsample and downsample
     self.upsample = UpSample(self.C*2, self.C, 8, 91, 180)
