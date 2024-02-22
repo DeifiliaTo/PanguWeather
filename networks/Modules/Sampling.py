@@ -61,7 +61,6 @@ class UpSample(nn.Module):
     # Call the linear functions to increase channels of the data
     x = self.linear1(x)
 
-    print("x shape in upsampling", x.shape)
     # Reorganize x to increase the resolution: simply change the order and upsample from (8, 180, 91) to (8, 360, 182)
     # Reshape x to facilitate upsampling.
     x = reshape(x, shape=(x.shape[0], self.nHeight, self.nLat, self.nLon, 2, 2, x.shape[-1]//4))

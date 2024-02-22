@@ -1,8 +1,9 @@
 #!/bin/bash
-#SBATCH --partition=accelerated
+#SBATCH --partition=dev_accelerated
 #SBATCH --gres=gpu:4
-#SBATCH --time=2:00:00
+#SBATCH --time=1:00:00
 #SBATCH --nodes=1
+#SBATCH --ntasks-per-node=4
 
 module purge # Unload all models.
 module load jupyter/tensorflow
