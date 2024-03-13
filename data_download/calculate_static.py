@@ -31,6 +31,8 @@ for file_name in file_list_plevel:
 mean_plevel = mean_sum_plevel / len(file_list_plevel)
 std_plevel  = np.sqrt(sq_sum_plevel/len(file_list_plevel))
 
+mean_plevel = mean_plevel[0, :]
+std_plevel  = std_plevel[0, :]
 # Save the results
 output_file = '/hkfs/work/workspace/scratch/ke4365-pangu/PANGU_ERA5_data_v0/static/pressure_means.h5'
 
@@ -65,6 +67,8 @@ for file_name in file_list_surface:
 mean_surface = mean_sum_surface / len(file_list_surface)
 std_surface  = np.sqrt(sq_sum_surface/len(file_list_surface))
 
+mean_surface = mean_surface[0, :]
+std_surface  = std_surface[0, :]
 # Save the results
 output_file = '/hkfs/work/workspace/scratch/ke4365-pangu/PANGU_ERA5_data_v0/static/surface_means.h5'
 

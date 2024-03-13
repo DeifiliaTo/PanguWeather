@@ -135,7 +135,6 @@ def writepltofile(src, dest, channel_idx, varslist, src_idx=0, frmt='nc'):
                         print("idx", idx)
                         print(fdest['fields'].shape)
                         fdest['fields'][idx:idx+batch,  channel_idx, :, :, :] = ims
-                        print("we break heree")
                         idx+=batch
                         ttot = time.time() - start
                         eta = (end - base)/((idx - base)/ttot)
@@ -154,11 +153,10 @@ if __name__ == "__main__":
     parser.add_argument("--nc_path", type=str, default="PANGU_ERA5_data_v0/", help="input path to nc files", required=True)
     parser.add_argument("--h5_path", type=str, default="PANGU_ERA5_data_v0/", help="output path to h5 files", required=True)
     parser.add_argument("--year", type=int, help="Year to convert data", required=True)
-    parser.add_argument('-pv','--pressure_variables', nargs='+', default=['z', 'q', 't', 'u'], help='Short names of variables to convert IN ORDER')
+    parser.add_argument('-pv','--pressure_variables', nargs='+', default=['z', 'q', 't', 'u', 'v'], help='Short names of variables to convert IN ORDER')
     parser.add_argument('-sv','--surface_variables', nargs='+', default=['msl', 'u10', 'v10', 't2m'], help='Short names of variables to convert IN ORDER')
 
     args = parser.parse_args()
-
     for var in range(len(args.pressure_variables)):
         writepltofile(src=args.nc_path + str(args.year) + '.nc',
                 dest=args.h5_path + str(args.year) + '.h5',
