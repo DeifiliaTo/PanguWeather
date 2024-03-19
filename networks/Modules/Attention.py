@@ -7,6 +7,7 @@ from torch.nn.functional import pad
 from timm.layers import DropPath, trunc_normal_
 from Modules.MLP import MLP
 import gc
+from torch.utils.checkpoint import checkpoint
 
 class EarthSpecificLayerBase(nn.Module):
   def __init__(self, depth, dim):
@@ -18,9 +19,11 @@ class EarthSpecificLayerBase(nn.Module):
     for i in range(self.depth):
       # Roll the input every two blocks
       if i % 2 == 0:
-        self.blocks[i](x, Z, H, W, roll=False)
+        x = checkpoint(self.blocks[i], x, Z, H, W, False, use_reentrant=False)
+        torch.cuda.empty_cache()
       else:
-        self.blocks[i](x, Z, H, W, roll=True)
+        x = checkpoint(self.blocks[i], x, Z, H, W, True, use_reentrant=False)
+        torch.cuda.empty_cache()
     return x
   
 class EarthSpecificLayerAbsolute(EarthSpecificLayerBase):
@@ -48,7 +51,7 @@ class EarthSpecificLayerNoBias(EarthSpecificLayerBase):
     # Construct basic blocks
     self.blocks = nn.ModuleList([EarthSpecificBlockNoBias(dim, drop_path_ratio_list[i], heads, input_shape=input_shape,device=device, input_resolution=input_resolution, window_size=window_size).to(device) for i in torch.arange(depth)])    
   
-# Assumes implementation for 3D transformer block
+# Provides base for EarthSpecificBlock
 class EarthSpecificBlockBase(nn.Module):
   def __init__(self, dim, drop_path_ratio, input_resolution, window_size):
     super().__init__()
@@ -63,9 +66,9 @@ class EarthSpecificBlockBase(nn.Module):
     self.input_resolution = input_resolution
     
     # Only generate masks one time @ initialization
-    self.attn_mask = self._gen_mask_(Z=input_resolution[0], H=input_resolution[1], W=input_resolution[2])
-    self.zero_mask = torch.zeros(self.attn_mask.shape)
-  
+    #self.attn_mask = self._gen_mask_(Z=input_resolution[0], H=input_resolution[1], W=input_resolution[2]).to(torch.float32)
+    #self.zero_mask = torch.zeros(self.attn_mask.shape).to(torch.float32)
+
   # Windows that wrap around w dimension do not get masked
   def _gen_mask_(self, Z, H, W):
     img_mask = torch.zeros((1, Z, H, W, 1))  # 1 Z H W 1
@@ -79,7 +82,6 @@ class EarthSpecificBlockBase(nn.Module):
     cnt = 0
     for z in z_slices:
       for h in h_slices:
-          
           img_mask[:, z, h, :, :] = cnt
           cnt += 1
 
@@ -155,10 +157,13 @@ class EarthSpecificBlockBase(nn.Module):
     
     # Apply 3D window attention with Earth-Specific bias
     
+    mask = self._gen_mask_(Z=ori_shape[1], H=ori_shape[2], W=ori_shape[3]).to(torch.float32)  
+    
     if roll:
-      attn_windows  = self.attention(x_window, self.attn_mask)
+      attn_windows  = self.attention(x_window, mask)
     else:
-      attn_windows  = self.attention(x_window, self.zero_mask)
+      zero_mask = torch.zeros(mask.shape).to(torch.float32)
+      attn_windows  = self.attention(x_window, zero_mask)
 
     attn_windows = attn_windows.view(-1, self.window_size[0], self.window_size[1], self.window_size[2], x.shape[-1])
 
@@ -205,7 +210,7 @@ class EarthSpecificBlockRelative(EarthSpecificBlockBase):
     '''
     super().__init__(dim, drop_path_ratio, input_resolution, window_size)
     
-    self.attention = EarthAttention3DRelative(dim, heads, 0, self.window_size, input_shape)
+    self.attention = EarthAttention3DRelative(dim, heads, 0, self.window_size, input_shape, device)
    
 class EarthSpecificBlockNoBias(EarthSpecificBlockBase):
   def __init__(self, dim, drop_path_ratio, heads, input_shape, device, input_resolution, window_size):
@@ -305,11 +310,11 @@ class EarthSpecificBlock2D(EarthSpecificBlockBase):
     x_window = x_window.view(-1, self.window_size[0]*self.window_size[1], x_window.shape[-1])# nW * B, window_size[0], window_size[1], window_size[2], C
     
     # Apply 3D window attention with Earth-Specific bias
-    
-    if roll:
-      attn_windows  = self.attention(x_window, self.attn_mask)
+    if roll:      
+      attn_windows  = self.attention(x_window, mask)
     else:
-      attn_windows  = self.attention(x_window, self.zero_mask)
+      zero_mask = torch.zeros(self.attn_mask.shape)
+      attn_windows  = self.attention(x_window, zero_mask)
 
     attn_windows = attn_windows.view(-1, self.window_size[0], self.window_size[1], x.shape[-1])
 
@@ -375,10 +380,7 @@ class EarthAttentionBase(nn.Module):
   def calculate_attention(self, x):
     # Linear layer to create query, key and value
     # Record the original shape of the input BEFORE linear layer (correct?)
-
-    # x shape: (B*nWindows, W0, W1, W2, C)
-    original_shape = x.shape 
-
+    original_shape = x.shape
     # x shape: (B*nWindows, W0*W1*W2, C)
     x = self.linear1(x)
     # reshape the data to calculate multi-head attention
@@ -390,7 +392,7 @@ class EarthAttentionBase(nn.Module):
     # Calculated the attention, a learnable bias is added to fix the nonuniformity of the grid.
     # Attention shape: nB * nWindows, nHeads, N, N (N = W0*W1*W2)
     attention = (query @ key.transpose(-2, -1)) # @ denotes matrix multiplication
-    return attention, value
+    return attention, value, original_shape
 
   def mask_attention(self, x, mask, attention, original_shape):
     # Mask the attention between non-adjacent pixels, e.g., simply add -100 to the masked element.
@@ -433,11 +435,12 @@ class EarthAttention3DAbsolute(EarthAttentionBase):
     3D window attention with the Earth-Specific bias, 
     see https://github.com/microsoft/Swin-Transformer for the official implementation of 2D window attention.
     '''
-    super().__init__()
+    super().__init__(dim, heads, dropout_rate, window_size)
     
     # Record the number of different window types
-    self.type_of_windows = (input_shape[0]//window_size[0])*(input_shape[1]//window_size[1])
-
+    # negative signs = "upside-down floor division": used to mimic ceiling function
+    self.type_of_windows = int(-(input_shape[0]//-window_size[0])) * -(input_shape[1]//-window_size[1])
+    
     # For each type of window, we will construct a set of parameters according to the paper
     self.earth_specific_bias = zeros(size=((2 * window_size[2] - 1) * window_size[1] * window_size[1] * window_size[0] * window_size[0], self.type_of_windows, heads))
 
@@ -496,7 +499,6 @@ class EarthAttention3DAbsolute(EarthAttentionBase):
     EarthSpecificBias = reshape(EarthSpecificBias, shape=(self.total_window_size, self.total_window_size, -1, self.head_number))
     EarthSpecificBias = permute(EarthSpecificBias, (2, 3, 0, 1))
 
-
     # Add the Earth-Specific bias to the attention matrix
     attention = attention.view(-1, EarthSpecificBias.shape[0], self.head_number, self.total_window_size, self.total_window_size) + EarthSpecificBias.unsqueeze(0)
     attention = attention.view(-1, self.head_number, self.total_window_size, self.total_window_size)
@@ -509,18 +511,18 @@ class EarthAttention3DAbsolute(EarthAttentionBase):
     return x
 
 class EarthAttention3DRelative(EarthAttentionBase):
-    def __init__(self, dim, heads, dropout_rate, window_size, input_shape):
-        super().__init__(dim, heads, dropout_rate, window_size, input_shape)
+    def __init__(self, dim, heads, dropout_rate, window_size, input_shape, device):
+        super().__init__( dim, heads, dropout_rate, window_size)
 
         #self.earth_specific_bias = None
         
         self.type_of_windows = 1
         # For each type of window, we will construct a set of parameters according to the paper
         # Making these tensors to be learnable parameters
-        self.earth_specific_bias = Parameter(zeros(size=((2 * window_size[2] - 1) * (2 * window_size[1] - 1) * (2  * window_size[0] -1), self.type_of_windows, heads)))
+        self.earth_specific_bias = Parameter(zeros(size=((2 * window_size[2] - 1) * (2 * window_size[1] - 1) * (2  * window_size[0] -1), self.type_of_windows, heads), device=device).to(torch.float32))
 
         # Initialize the tensors using Truncated normal distribution
-        trunc_normal_(self.earth_specific_bias, std=.02) 
+        #trunc_normal_(self.earth_specific_bias, std=.02) 
 
         # Construct position index to reuse self.earth_specific_bias
         self.position_index = self._construct_index()
@@ -562,7 +564,7 @@ class EarthAttention3DRelative(EarthAttentionBase):
       # Reshape the learnable bias to the same shape as the attention matrix
       EarthSpecificBias = reshape(EarthSpecificBias, shape=(self.total_window_size, self.total_window_size,  self.head_number))
       EarthSpecificBias = permute(EarthSpecificBias, (2, 0, 1))
-
+              
       # Add the Earth-Specific bias to the attention matrix
       attention = attention + EarthSpecificBias.unsqueeze(0)
       attention = self.mask_attention(x, mask, attention, original_shape)
@@ -579,7 +581,7 @@ class EarthAttention2D(EarthAttentionBase):
     3D window attention with the Earth-Specific bias, 
     see https://github.com/microsoft/Swin-Transformer for the official implementation of 2D window attention.
     '''
-    super().__init__()
+    super().__init__(dim, heads, dropout_rate, window_size)
 
     # Record the number of different window types
     self.type_of_windows = (input_shape[0]//window_size[0]) # check
@@ -702,4 +704,5 @@ class EarthAttentionNoBias(EarthAttentionBase):
     # Calculated the tensor after spatial mixing.
     # Linear layer to post-process operated tensor
     x = self.mixing_linear_layer(attention, value, original_shape)
+    
     return x

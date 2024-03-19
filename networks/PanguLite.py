@@ -42,7 +42,7 @@ class PanguModel(nn.Module):
     self.layer4 = EarthSpecificLayerAbsolute(2, self.C, drop_list[:2], 6,  input_shape=[8, 93], device=device, input_resolution=(8, 93, 180), window_size=torch.tensor([2, 6, 12]))
 
     # Upsample and downsample
-    self.upsample = UpSample(self.C*2, self.C, nHeight=8, nLat=46, nLon=90)
+    self.upsample = UpSample(self.C*2, self.C, nHeight=8, nLat=46, nLon=90, height_crop=(0,0), lat_crop=(0, 1), lon_crop=(0, 0))
 
     self.downsample = DownSample(self.C, downsampling=(2,2))
     

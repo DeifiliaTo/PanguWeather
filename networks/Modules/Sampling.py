@@ -42,12 +42,24 @@ class DownSample(nn.Module):
     return x
 
 class UpSample(nn.Module):
-  def __init__(self, input_dim, output_dim, nHeight, nLat, nLon):
+  def __init__(self, input_dim, output_dim, nHeight, nLat, nLon, height_crop=(0,0), lat_crop=(0,0), lon_crop=(0,0)):
     '''Up-sampling operation'''
     super().__init__()
     self.nHeight = nHeight
     self.nLat = nLat
     self.nLon = nLon
+    self.height_crop = height_crop
+    self.lat_crop = lat_crop
+    self.lon_crop = lon_crop
+
+    # editing to ensure the crops aren't (0,0)
+    #if self.height_crop[0] == 0 and self.height_crop[1] == 0:
+    #  raise ValueError("Height crop in upsampling cannot be (0, 0). Change to (0, None)")
+    #if self.lat_crop[0] == 0 and self.lat_crop[1] == 0:
+    #  raise ValueError("Lat crop in upsampling cannot be (0, 0). Change to (0, None)")
+    #if self.lon_crop[0] == 0 and self.lon_crop[1] == 0:
+    #  raise ValueError("Lon crop in upsampling cannot be (0, 0). Change to (0, None)")
+
     # Linear layers without bias to increase channels of the data
     self.linear1 = Linear(input_dim, output_dim*4, bias=False)
     
@@ -70,7 +82,7 @@ class UpSample(nn.Module):
     x = reshape(x, shape=(x.shape[0], self.nHeight, self.nLat*2, self.nLon*2, x.shape[-1]))    
 
     # Crop the output to the input shape of the network
-    x = x[:, :, 1:, :, :] # How to communicate cropping efficiently between the down/upsampling dimensions?
+    x = x[:, self.height_crop[0]:-self.height_crop[1] or None, self.lat_crop[0]:-self.lat_crop[1] or None, self.lon_crop[0]:-self.lon_crop[1] or None, :] # How to communicate cropping efficiently between the down/upsampling dimensions?
     # Reshape x back
     x = reshape(x, shape=(x.shape[0], x.shape[1]*x.shape[2]*x.shape[3], x.shape[-1]))
 

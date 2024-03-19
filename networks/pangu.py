@@ -42,7 +42,7 @@ class PanguModel(nn.Module):
     self.layer4 = EarthSpecificLayerAbsolute(2, self.C, drop_list[:2], 6,  input_shape=[8, 186], device=device, input_resolution=(8, 186, 360), window_size=torch.tensor([2, 6, 12]))
 
     # Upsample and downsample
-    self.upsample = UpSample(self.C*2, self.C, nHeight=8, nLat=91, nLon=180)
+    self.upsample = UpSample(self.C*2, self.C, nHeight=8, nLat=91, nLon=180, height_crop=(0,None), lat_crop=(0, 1), lon_crop=(0, None))
 
     self.downsample = DownSample(self.C, downsampling=(2,2))
     
@@ -64,7 +64,7 @@ class PanguModel(nn.Module):
     
     # Downsample from (8, 360, 181) to (8, 180, 91)
     x = self.downsample(x, 8, 181, 360)
-    
+
     # Layer 2, shape (8, 180, 91, 2C), C = 192 as in the original paper
     x = self.layer2(x, 8, 91, 180) 
 
@@ -84,19 +84,3 @@ class PanguModel(nn.Module):
     # Recover the output fields from patches
     output, output_surface = self._output_layer(x, Z=8, H=181, W=360)
     return output, output_surface
-
-def PerlinNoise():
-  '''Generate random Perlin noise: we follow https://github.com/pvigier/perlin-numpy/ to calculate the perlin noise.'''
-  # Define number of noise
-  octaves = 3
-  # Define the scaling factor of noise
-  noise_scale = 0.2
-  # Define the number of periods of noise along the axis
-  period_number = 12
-  # The size of an input slice
-  H, W = 721, 1440
-  # Scaling factor between two octaves
-  persistence = 0.5
-  # see https://github.com/pvigier/perlin-numpy/ for the implementation of GenerateFractalNoise (e.g., from perlin_numpy import generate_fractal_noise_3d)
-  perlin_noise = noise_scale*GenerateFractalNoise((H, W), (period_number, period_number), octaves, persistence)
-  return perlin_noise

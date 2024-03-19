@@ -37,8 +37,8 @@ class PanguModel(nn.Module):
 
     # Four basic layers
     self.layer1 = EarthSpecificLayerNoBias(2, self.C, drop_list[:2],   6,  input_shape=[8, 186], device=device, input_resolution=(8, 186, 360), window_size=torch.tensor([2, 6, 12]))
-    self.layer2 = EarthSpecificLayerNoBias(6, 2*self.C, drop_list[2:], 12, input_shape=[8, 96],  device=device, input_resolution=(8, 96, 180), window_size=torch.tensor([2, 6, 12]))
-    self.layer3 = EarthSpecificLayerNoBias(6, 2*self.C, drop_list[2:], 12, input_shape=[8, 96],  device=device, input_resolution=(8, 96, 180), window_size=torch.tensor([2, 6, 12]))
+    self.layer2 = EarthSpecificLayerNoBias(1, 2*self.C, drop_list[2:], 12, input_shape=[8, 96],  device=device, input_resolution=(8, 96, 180), window_size=torch.tensor([2, 6, 12]))
+    self.layer3 = EarthSpecificLayerNoBias(1, 2*self.C, drop_list[2:], 12, input_shape=[8, 96],  device=device, input_resolution=(8, 96, 180), window_size=torch.tensor([2, 6, 12]))
     self.layer4 = EarthSpecificLayerNoBias(2, self.C, drop_list[:2],   6,  input_shape=[8, 186], device=device, input_resolution=(8, 186, 360), window_size=torch.tensor([2, 6, 12]))
 
     # Upsample and downsample
