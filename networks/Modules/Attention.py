@@ -88,18 +88,19 @@ class EarthSpecificBlockBase(nn.Module):
     mask_windows = self._window_partition(img_mask, self.window_size)  # nW, window_size, window_size, 1
     mask_windows = mask_windows.view(-1, self.window_size[0] * self.window_size[1]* self.window_size[2])
     attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
-    attn_mask = attn_mask.masked_fill(attn_mask != 0, float(-100.0)).masked_fill(attn_mask == 0, float(0.0))
+    attn_mask = attn_mask.masked_fill(attn_mask != 0, float(-10000.0)).masked_fill(attn_mask == 0, float(0.0))
     return attn_mask
   
   def _window_partition(self, x, window_size):
     """
     Args:
-        x: (B, H, W, C)
+        x: (B, Z, H, W, C)
         window_size (int): window size
 
     Returns:
-        windows: (num_windows*B, window_size, window_size, C)
+        windows: (num_windows*B, window_size[0], window_size[1], window_size[2], C)
     """
+    
     B, Z, H, W, C = x.shape
     x = x.view(B, Z // window_size[0], window_size[0], H // window_size[1], window_size[1], W // window_size[2], window_size[2], C)
     windows = x.permute(0, 1, 3, 5, 2, 4, 6, 7).contiguous().view(-1, window_size[0], window_size[1], window_size[2], C)
@@ -108,7 +109,7 @@ class EarthSpecificBlockBase(nn.Module):
   def _window_reverse(self, windows, window_size, Z, H, W):
       """
       Args:
-          windows: (num_windows*B, window_size[0], window_size[1], window_size[2], C)
+          windows: (num_windows*B, window_size[0], window_size[1], window_size[2], C) == nB,W0,W2,W1,C
           window_size (int): Window size
           Z (int): Number of pressure heights
           H (int): Height of image
@@ -117,9 +118,10 @@ class EarthSpecificBlockBase(nn.Module):
       Returns:
           x: (B, Z, H, W, C)
       """
+
       B = int(windows.shape[0] / (Z * H * W) * (window_size[0] * window_size[1] * window_size[2]))
       x = windows.view(B, Z // window_size[0], H // window_size[1], W // window_size[2], window_size[0], window_size[1], window_size[2], -1)
-      x = x.permute(0, 1, 3, 5, 2, 4, 6, 7).contiguous().view(B, Z, H, W, -1)
+      x = x.permute(0, 1, 4, 2, 5, 3, 6, 7)
       return x
   
   def forward(self, x, Z, H, W, roll):
@@ -140,7 +142,7 @@ class EarthSpecificBlockBase(nn.Module):
     x = pad(x, pad=(0, 0, z1_pad, z2_pad, y1_pad, y2_pad, x1_pad, x2_pad), mode='constant', value=0)
     
     # Store the shape of the input for restoration
-    ori_shape = x.shape
+    ori_shape = x.shape 
 
     if roll:
       # Roll x for half of the window for 3 dimensions
@@ -168,16 +170,15 @@ class EarthSpecificBlockBase(nn.Module):
     attn_windows = attn_windows.view(-1, self.window_size[0], self.window_size[1], self.window_size[2], x.shape[-1])
 
     x = self._window_reverse(attn_windows, self.window_size, Z=x.shape[1], H=x.shape[2], W=x.shape[3])
-
     # Reshape the tensor back to its original shape
-    x = reshape(x, shape=ori_shape) # B, Z, H, W, C
+    x = reshape(x, shape=ori_shape) # B, Z, H, W, C 
 
     if roll:
       # Roll x back for half of the window
       x = torch.roll(x, shifts=(-self.window_size[0]//2, -self.window_size[1]//2, -self.window_size[2]//2), dims=(1, 2, 3))
 
     # Crop the zero padding
-    x = x[:, x2_pad:x2_pad+Z, y2_pad:y2_pad+H, z2_pad:z2_pad+W, :]
+    x = x[:, x1_pad:x1_pad+Z, y1_pad:y1_pad+H, z1_pad:z1_pad+W, :]
     
     # Reshape the tensor back to the input shape
     x = reshape(x, shape=(x.shape[0], x.shape[1]*x.shape[2]*x.shape[3], x.shape[4]))
@@ -291,7 +292,7 @@ class EarthSpecificBlock2D(EarthSpecificBlockBase):
     y1_pad    = (self.window_size[1] - (x.shape[2] % self.window_size[1])) % self.window_size[1] // 2
     y2_pad    = (self.window_size[1] - (x.shape[2] % self.window_size[1])) % self.window_size[1] - y1_pad
     
-    x = pad(x, pad=(0, 0, y1_pad, y2_pad, x1_pad, x2_pad), mode='constant', value=0) # TODO check
+    x = pad(x, pad=(0, 0, y1_pad, y2_pad, x1_pad, x2_pad), mode='constant', value=0) 
     
     # Store the shape of the input for restoration
     ori_shape = x.shape
@@ -356,7 +357,7 @@ class EarthSpecificBlock2D(EarthSpecificBlockBase):
     mask_windows = self._window_partition(img_mask, self.window_size)  # nW, window_size, window_size, 1
     mask_windows = mask_windows.view(-1, self.window_size[0] * self.window_size[1])
     attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
-    attn_mask = attn_mask.masked_fill(attn_mask != 0, float(-100.0)).masked_fill(attn_mask == 0, float(0.0))
+    attn_mask = attn_mask.masked_fill(attn_mask != 0, float(-1000.0)).masked_fill(attn_mask == 0, float(0.0))
     return attn_mask
    
 class EarthAttentionBase(nn.Module):
@@ -380,36 +381,41 @@ class EarthAttentionBase(nn.Module):
   def calculate_attention(self, x):
     # Linear layer to create query, key and value
     # Record the original shape of the input BEFORE linear layer (correct?)
-    original_shape = x.shape
-    # x shape: (B*nWindows, W0*W1*W2, C)
-    x = self.linear1(x)
+    original_shape = x.shape # x shape: (B*nW, W0*W1*W2, dim)
+    
+    x = self.linear1(x)      # x shape: (B*nW, W0*W1*W2, 3*dim)
     # reshape the data to calculate multi-head attention
+    # q shape: (B*nW, W0*W1*W2, 3, nHead, dim/nHead)
     qkv = reshape(x, shape=(x.shape[0], x.shape[1], 3, self.head_number, self.dim // self.head_number)) 
+    # query after permute: (nB, nHead, W0*W1*W2, C/nHead)
     query, key, value = permute(qkv, (2, 0, 3, 1, 4))
     # Scale the attention
     query = query * self.scale
 
     # Calculated the attention, a learnable bias is added to fix the nonuniformity of the grid.
-    # Attention shape: nB * nWindows, nHeads, N, N (N = W0*W1*W2)
+    # Attention shape: B*nW, nHeads, N, N (N = W0*W1*W2)
     attention = (query @ key.transpose(-2, -1)) # @ denotes matrix multiplication
     return attention, value, original_shape
 
   def mask_attention(self, x, mask, attention, original_shape):
     # Mask the attention between non-adjacent pixels, e.g., simply add -100 to the masked element.
     # from SWIN paper
-    if x.get_device() < 0: 
+    if attention.get_device() < 0: 
       device = 'cpu'
     else:
-      device = x.get_device()
+      device = attention.get_device()
     mask = mask.to(device)
 
-    nW = mask.shape[0]
-    N = original_shape[1]
-    B_ = original_shape[0]
+    # attention shape: nW * B, nHeads, W[0]*W[1]*W[2], W[0]*W[1]*W[2]
+    # mask shape: nW, W[0]*W[1]*W[2], W[0]*W[1]*W[2]
+    nW = mask.shape[0]  # nW
+    N = original_shape[1] # W0*W1*W2
+    B_ = original_shape[0] # B*nW
 
-    attention = attention.view(B_ // nW, nW, self.head_number, N, N)
-    attention = attention + mask.unsqueeze(1).unsqueeze(0)
-    attention = attention.view(-1, self.head_number, N, N)
+    # original attention shape: (nW * B, nHead, W0*W1*W2, W0*W1*W2)
+    attention = attention.view(B_ // nW, nW, self.head_number, N, N) # (B, nW, nHead, nHead, W0*W1*W2)
+    attention = attention + mask.unsqueeze(1).unsqueeze(0)           # (B, nW, nHead, W0*W1*W2, W0*W1*W2) + (1,  nW, 1, W0*W1*W2, W0*W1*W2)
+    attention = attention.view(B_, self.head_number, N, N)           # (B*nW, nHead, W0*W1*W2, W0*W1*W2)
     return attention
 
   def activate(self, attention):
@@ -417,10 +423,16 @@ class EarthAttentionBase(nn.Module):
     attention = self.dropout(attention)
     return attention
   
-  def mixing_linear_layer(self, attention, value, original_shape):
-    x = (attention @ value) # @ denote matrix multiplication
-    x = x.transpose(1, 2)
+  def mixing_linear_layer(self, attention, value, original_shape): # attention.view(batches*nWindows, nHeads, N, N)
+    # attention shape: (nB, nHeads, W0*W1*W2, W0*W1*W2)
+    # value shape    : (nB, nHeads, W0*W1*W2, C/nHeads)
+    # x shape after mat mul: (nB, nHeads, W0*W1*W2, C/nHeads)
     
+    x = (attention @ value) # @ denote matrix multiplication
+    # x shape after transpose: (B*nW, W0*W1*W2, nHeads, C/nHeads)
+    x = torch.transpose(x, 1, 2)
+    
+    # original shape: (B*nW, W0*W1*W2, dim)
     # Reshape tensor to the original shape
     x = reshape(x, shape = original_shape)
 
@@ -439,9 +451,10 @@ class EarthAttention3DAbsolute(EarthAttentionBase):
     
     # Record the number of different window types
     # negative signs = "upside-down floor division": used to mimic ceiling function
-    self.type_of_windows = int(-(input_shape[0]//-window_size[0])) * -(input_shape[1]//-window_size[1])
+    self.type_of_windows = int(-(input_shape[0]//-window_size[0]) * -(input_shape[1]//-window_size[1]))
     
     # For each type of window, we will construct a set of parameters according to the paper
+     # (size of each window, number of windows, heads)
     self.earth_specific_bias = zeros(size=((2 * window_size[2] - 1) * window_size[1] * window_size[1] * window_size[0] * window_size[0], self.type_of_windows, heads))
 
     # Making these tensors to be learnable parameters
@@ -470,8 +483,8 @@ class EarthAttention3DAbsolute(EarthAttentionBase):
     coords_w = arange(start=0, end=self.window_size[2])
 
     # Change the order of the index to calculate the index in total
-    coords_1 = stack(meshgrid([coords_zi, coords_hi, coords_w]))
-    coords_2 = stack(meshgrid([coords_zj, coords_hj, coords_w]))
+    coords_1 = stack(meshgrid([coords_zi, coords_hi, coords_w], indexing='xy'))
+    coords_2 = stack(meshgrid([coords_zj, coords_hj, coords_w], indexing='xy'))
     coords_flatten_1 = flatten(coords_1, start_dim=1) 
     coords_flatten_2 = flatten(coords_2, start_dim=1)
     coords = coords_flatten_1[:, :, None] - coords_flatten_2[:, None, :]
@@ -494,14 +507,20 @@ class EarthAttention3DAbsolute(EarthAttentionBase):
 
     # self.earth_specific_bias is a set of neural network parameters to optimize. 
     EarthSpecificBias = self.earth_specific_bias[self.position_index] 
-
+      
     # Reshape the learnable bias to the same shape as the attention matrix
-    EarthSpecificBias = reshape(EarthSpecificBias, shape=(self.total_window_size, self.total_window_size, -1, self.head_number))
+    EarthSpecificBias = reshape(EarthSpecificBias, shape=(self.total_window_size, self.total_window_size, self.type_of_windows, self.head_number))
+    # ESB shape after permute: n_windows, n_heads, window size, window size
     EarthSpecificBias = permute(EarthSpecificBias, (2, 3, 0, 1))
+    
 
     # Add the Earth-Specific bias to the attention matrix
+    # Attention shape: nB * nWindows, nHeads, N, N (N = W0*W1*W2)
+    # attention.view(batches, nWindows, nHeads, N, N) + (1, nWindows, nHeads, N, N)
     attention = attention.view(-1, EarthSpecificBias.shape[0], self.head_number, self.total_window_size, self.total_window_size) + EarthSpecificBias.unsqueeze(0)
+    # attention.view(batches*nWindows, nHeads, N, N)
     attention = attention.view(-1, self.head_number, self.total_window_size, self.total_window_size)
+
     attention = self.mask_attention(x, mask, attention, original_shape)
     attention = self.activate(attention)
     
@@ -522,7 +541,7 @@ class EarthAttention3DRelative(EarthAttentionBase):
         self.earth_specific_bias = Parameter(zeros(size=((2 * window_size[2] - 1) * (2 * window_size[1] - 1) * (2  * window_size[0] -1), self.type_of_windows, heads), device=device).to(torch.float32))
 
         # Initialize the tensors using Truncated normal distribution
-        #trunc_normal_(self.earth_specific_bias, std=.02) 
+        trunc_normal_(self.earth_specific_bias, std=.02) 
 
         # Construct position index to reuse self.earth_specific_bias
         self.position_index = self._construct_index()
@@ -703,6 +722,7 @@ class EarthAttentionNoBias(EarthAttentionBase):
     attention = self.activate(attention)
     # Calculated the tensor after spatial mixing.
     # Linear layer to post-process operated tensor
+    # attention shape: (B*nW, nHead, W0*W1*W2, W0*W1*W2)
     x = self.mixing_linear_layer(attention, value, original_shape)
     
     return x

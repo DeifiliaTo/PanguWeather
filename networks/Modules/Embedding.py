@@ -41,7 +41,7 @@ class PatchEmbedding(nn.Module):
 
     # Concatenate the input in the pressure level, i.e., in Z dimension
     input_surface = input_surface.unsqueeze(2) # performs broadcasting to add a dimension
-    x = torch.cat((input, input_surface), dim=2)
+    x = torch.cat((input_surface, input), dim=2)
 
     # Reshape x for calculation of linear projections
     # Dimensions: (nData, pressure levels, latitude, longitude, fields)
@@ -70,14 +70,15 @@ class PatchEmbedding2D(PatchEmbedding):
     soil_type  = torch.broadcast_to(self.soil_type,   (input_surface_shape[0], 1, input_surface_shape[2], input_surface_shape[3]))
     topography = torch.broadcast_to(self.topography,  (input_surface_shape[0], 1, input_surface_shape[2], input_surface_shape[3]))
     
-    input_surface = torch.cat((input_surface, land_mask, soil_type, topography), dim=1)
+    input_surface = torch.cat((land_mask, soil_type, topography, input_surface), dim=1)
 
     # Apply a linear projection for patch_size[1]*patch_size[2] patches
     input_surface = self.conv_surface(input_surface)
 
     # Concatenate the input in the pressure level, i.e., in Z dimension
     input_surface = input_surface.unsqueeze(2) # performs broadcasting to add a dimension
-    x = torch.cat((input, input_surface), dim=2)
+    
+    x = torch.cat((input_surface, input), dim=2)
 
     # Reshape x for calculation of linear projections
     # Dimensions: (nData, pressure levels: 2, latitude: 3, longitude:4, fields:1)
