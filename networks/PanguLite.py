@@ -24,7 +24,7 @@ from torch import load
 import torch
 
 class PanguModel(nn.Module):
-  def __init__(self, C=192, patch_size=(2, 4, 4), device='cpu'):
+  def __init__(self, C=192, patch_size=(2, 8, 8), device='cpu'):
     super().__init__()
     # Drop path rate is linearly increased as the depth increases
     drop_list = linspace(0, 0.2, 8) # used to be drop_path_list
@@ -36,13 +36,13 @@ class PanguModel(nn.Module):
     self._input_layer = PatchEmbedding(patch_size, dim=self.C, device=device)
 
     # Four basic layers
-    self.layer1 = EarthSpecificLayerAbsolute(2, self.C, drop_list[:2], 6,  input_shape=[8, 186], device=device, input_resolution=(8, 186, 360), window_size=torch.tensor([2, 6, 12]))
-    self.layer2 = EarthSpecificLayerAbsolute(6, 2*self.C, drop_list[2:], 12, input_shape=[8, 96], device=device, input_resolution=(8, 96, 180), window_size=torch.tensor([2, 6, 12]))
-    self.layer3 = EarthSpecificLayerAbsolute(6, 2*self.C, drop_list[2:], 12, input_shape=[8, 96], device=device, input_resolution=(8, 96, 180), window_size=torch.tensor([2, 6, 12]))
-    self.layer4 = EarthSpecificLayerAbsolute(2, self.C, drop_list[:2], 6,  input_shape=[8, 186], device=device, input_resolution=(8, 186, 360), window_size=torch.tensor([2, 6, 12]))
+    self.layer1 = EarthSpecificLayerAbsolute(2, self.C, drop_list[:2], 6,  input_shape=[8, 93], device=device, input_resolution=(8, 93, 180), window_size=torch.tensor([2, 6, 12]))
+    self.layer2 = EarthSpecificLayerAbsolute(6, 2*self.C, drop_list[2:], 12, input_shape=[8, 46], device=device, input_resolution=(8, 46, 90), window_size=torch.tensor([2, 6, 12]))
+    self.layer3 = EarthSpecificLayerAbsolute(6, 2*self.C, drop_list[2:], 12, input_shape=[8, 46], device=device, input_resolution=(8, 46, 90), window_size=torch.tensor([2, 6, 12]))
+    self.layer4 = EarthSpecificLayerAbsolute(2, self.C, drop_list[:2], 6,  input_shape=[8, 93], device=device, input_resolution=(8, 93, 180), window_size=torch.tensor([2, 6, 12]))
 
     # Upsample and downsample
-    self.upsample = UpSample(self.C*2, self.C, nHeight=8, nLat=91, nLon=180, height_crop=(0,None), lat_crop=(0, 1), lon_crop=(0, None))
+    self.upsample = UpSample(self.C*2, self.C, nHeight=8, nLat=46, nLon=90, height_crop=(0,0), lat_crop=(0, 1), lon_crop=(0, 0))
 
     self.downsample = DownSample(self.C, downsampling=(2,2))
     
@@ -57,30 +57,30 @@ class PanguModel(nn.Module):
 
     # Encoder, composed of two layers
     # Layer 1, shape (8, 360, 181, C), C = 192 as in the original paper
-    x = self.layer1(x, 8, 181, 360) 
+    x = self.layer1(x, 8, 91, 180) 
     
     # Store the tensor for skip-connection
     skip = x.clone()
     
     # Downsample from (8, 360, 181) to (8, 180, 91)
-    x = self.downsample(x, 8, 181, 360)
+    x = self.downsample(x, 8, 91, 180)
 
     # Layer 2, shape (8, 180, 91, 2C), C = 192 as in the original paper
-    x = self.layer2(x, 8, 91, 180) 
+    x = self.layer2(x, 8, 46, 90) 
 
     # Decoder, composed of two layers
     # Layer 3, shape (8, 180, 91, 2C), C = 192 as in the original paper
-    x = self.layer3(x, 8, 91, 180) 
+    x = self.layer3(x, 8, 46, 90) 
 
     # Upsample from (8, 180, 91) to (8, 360, 181)
     x = self.upsample(x)
 
     # Layer 4, shape (8, 360, 181, 2C), C = 192 as in the original paper
-    x = self.layer4(x, 8, 181, 360) 
+    x = self.layer4(x, 8, 91, 180) 
 
     # Skip connect, in last dimension(C from 192 to 384)
     x = torch.cat((skip, x), dim=2)
 
     # Recover the output fields from patches
-    output, output_surface = self._output_layer(x, Z=8, H=181, W=360)
+    output, output_surface = self._output_layer(x, 8, 91, 180)
     return output, output_surface
