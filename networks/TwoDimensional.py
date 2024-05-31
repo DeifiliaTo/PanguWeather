@@ -1,8 +1,9 @@
 import sys
 sys.path.append("/hkfs/work/workspace/scratch/ke4365-pangu/pangu-weather/networks/")
-from Modules.Embedding import PatchEmbedding, PatchRecovery
-from Modules.Sampling import UpSample, DownSample
-from Modules.Attention import EarthSpecificLayerNoBias
+from Modules.Embedding import PatchEmbedding2D, PatchRecovery2D
+from Modules.Sampling import UpSample2D, DownSample2D
+from Modules.Attention import EarthSpecificLayer2DNoBias
+from timm.layers import  trunc_normal_
 
 from torch import nn
 import torch.nn as nn
@@ -24,7 +25,7 @@ from torch import load
 import torch
 
 class PanguModel(nn.Module):
-  def __init__(self, C=192, patch_size=(2, 8, 8), device='cpu'):
+  def __init__(self, C=int(192*1.5), patch_size=(4, 4), device='cpu'):
     super().__init__()
     # Drop path rate is linearly increased as the depth increases
     drop_list = linspace(0, 0.2, 8) # used to be drop_path_list
@@ -33,54 +34,59 @@ class PanguModel(nn.Module):
     self.patch_size = patch_size
 
     # Patch embedding
-    self._input_layer = PatchEmbedding(patch_size, dim=self.C, device=device)
+    self._input_layer = PatchEmbedding2D(patch_size, dim=self.C, device=device)
+    
+    self.absolute_pos_embed = nn.Parameter(torch.zeros(1, 181, self.C))
+    trunc_normal_(self.absolute_pos_embed, std=0.02)
 
     # Four basic layers
-    self.layer1 = EarthSpecificLayerNoBias(2, self.C, drop_list[:2], 6,  input_shape=[8, 93], device=device, input_resolution=(8, 93, 180), window_size=torch.tensor([2, 6, 12]))
-    self.layer2 = EarthSpecificLayerNoBias(6, 2*self.C, drop_list[2:], 12, input_shape=[8, 46], device=device, input_resolution=(8, 46, 90), window_size=torch.tensor([2, 6, 12]))
-    self.layer3 = EarthSpecificLayerNoBias(6, 2*self.C, drop_list[2:], 12, input_shape=[8, 46], device=device, input_resolution=(8, 46, 90), window_size=torch.tensor([2, 6, 12]))
-    self.layer4 = EarthSpecificLayerNoBias(2, self.C, drop_list[:2], 6,  input_shape=[8, 93], device=device, input_resolution=(8, 93, 180), window_size=torch.tensor([2, 6, 12]))
+    self.layer1 = EarthSpecificLayer2DNoBias(2, self.C, drop_list[:2], 6,  input_shape=[8, 186], device=device, input_resolution=(186, 360), window_size=torch.tensor([6, 12]))
+    self.layer2 = EarthSpecificLayer2DNoBias(6, 2*self.C, drop_list[2:], 12, input_shape=[8, 96], device=device, input_resolution=(96, 180), window_size=torch.tensor([6, 12]))
+    self.layer3 = EarthSpecificLayer2DNoBias(6, 2*self.C, drop_list[2:], 12, input_shape=[8, 96], device=device, input_resolution=(96, 180), window_size=torch.tensor([6, 12]))
+    self.layer4 = EarthSpecificLayer2DNoBias(2, self.C, drop_list[:2], 6,  input_shape=[8, 186], device=device, input_resolution=(186, 360), window_size=torch.tensor([6, 12]))
 
     # Upsample and downsample
-    self.upsample = UpSample(self.C*2, self.C, nHeight=8, nLat=46, nLon=90, height_crop=(0,0), lat_crop=(0, 1), lon_crop=(0, 0))
+    self.upsample = UpSample2D(self.C*2, self.C, nLat=91, nLon=180, lat_crop=(0, 1), lon_crop=(0, 0))
 
-    self.downsample = DownSample(self.C, downsampling=(2,2))
+    self.downsample = DownSample2D(self.C, downsampling=(2,2))
     
     # Patch Recovery
-    self._output_layer = PatchRecovery(self.patch_size, dim=2*self.C) # added patch size
+    self._output_layer = PatchRecovery2D(self.patch_size, dim=2*self.C) # added patch size
     
   def forward(self, input, input_surface):
     '''Backbone architecture'''
     # Embed the input fields into patches
 
     x = self._input_layer(input, input_surface)
+    x = x.reshape(x.shape[0], 181, 360, self.C) + self.absolute_pos_embed.unsqueeze(2)
+    x = x.reshape(x.shape[0], -1, self.C)
 
     # Encoder, composed of two layers
     # Layer 1, shape (8, 360, 181, C), C = 192 as in the original paper
-    x = self.layer1(x, 8, 91, 180) 
+    x = self.layer1(x, 181, 360) 
     
     # Store the tensor for skip-connection
     skip = x.clone()
     
     # Downsample from (8, 360, 181) to (8, 180, 91)
-    x = self.downsample(x, 8, 91, 180)
+    x = self.downsample(x, 181, 360)
 
     # Layer 2, shape (8, 180, 91, 2C), C = 192 as in the original paper
-    x = self.layer2(x, 8, 46, 90) 
+    x = self.layer2(x, 91, 180) 
 
     # Decoder, composed of two layers
     # Layer 3, shape (8, 180, 91, 2C), C = 192 as in the original paper
-    x = self.layer3(x, 8, 46, 90) 
+    x = self.layer3(x, 91, 180) 
 
     # Upsample from (8, 180, 91) to (8, 360, 181)
     x = self.upsample(x)
 
     # Layer 4, shape (8, 360, 181, 2C), C = 192 as in the original paper
-    x = self.layer4(x, 8, 91, 180) 
+    x = self.layer4(x, 181, 360) 
 
     # Skip connect, in last dimension(C from 192 to 384)
     x = torch.cat((skip, x), dim=2)
 
     # Recover the output fields from patches
-    output, output_surface = self._output_layer(x, 8, 91, 180)
+    output, output_surface = self._output_layer(x, 181, 360)
     return output, output_surface
