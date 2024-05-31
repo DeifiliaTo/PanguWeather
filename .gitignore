@@ -17,3 +17,4 @@ partialdata.zarr/*
 *results/*
 *.sh
 train2.py
+*/*.pt
