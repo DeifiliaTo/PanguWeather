@@ -3,6 +3,7 @@ sys.path.append("/hkfs/work/workspace/scratch/ke4365-pangu/pangu-weather/network
 from Modules.Embedding import PatchEmbedding, PatchRecovery
 from Modules.Sampling import UpSample, DownSample
 from Modules.Attention import EarthSpecificLayerNoBias
+from timm.layers import  trunc_normal_
 
 from torch import nn
 import torch.nn as nn
@@ -35,6 +36,11 @@ class PanguModel(nn.Module):
     # Patch embedding
     self._input_layer = PatchEmbedding(patch_size, dim=self.C, device=device)
 
+    self.absolute_pos_embed = nn.Parameter(torch.zeros(1, 728, 192))
+    trunc_normal_(self.absolute_pos_embed, std=0.02)
+
+    # number of patches
+
     # Four basic layers
     self.layer1 = EarthSpecificLayerNoBias(2, self.C, drop_list[:2], 6,  input_shape=[8, 93], device=device, input_resolution=(8, 93, 180), window_size=torch.tensor([2, 6, 12]))
     self.layer2 = EarthSpecificLayerNoBias(6, 2*self.C, drop_list[2:], 12, input_shape=[8, 46], device=device, input_resolution=(8, 46, 90), window_size=torch.tensor([2, 6, 12]))
@@ -54,10 +60,15 @@ class PanguModel(nn.Module):
     # Embed the input fields into patches
 
     x = self._input_layer(input, input_surface)
+    # x: shape(nBatch, 131040, 192)
+
+    x = x.reshape(x.shape[0], 728, 180, 192) + self.absolute_pos_embed.unsqueeze(2)
+    x = x.reshape(x.shape[0], 131040, 192)
 
     # Encoder, composed of two layers
     # Layer 1, shape (8, 360, 181, C), C = 192 as in the original paper
     x = self.layer1(x, 8, 91, 180) 
+    
     
     # Store the tensor for skip-connection
     skip = x.clone()

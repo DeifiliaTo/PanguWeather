@@ -3,6 +3,7 @@ from networks.pangu import PanguModel as PanguModel
 from networks.PanguLite import PanguModel as PanguModelLite
 from networks.relativeBias import PanguModel as RelativeBiasModel
 from networks.noBias import PanguModel as NoBiasModel
+from networks.Three_layers import PanguModel as ThreeLayerModel
 from utils.data_loader_multifiles import get_data_loader
 import torch
 import torch.distributed as dist
@@ -57,6 +58,8 @@ def validation(params, device, slurm_localid, gpus_per_node):
         model = RelativeBiasModel(device=device, C=C, patch_size=params['patch_size'])
     elif params['model'] == 'noBias':
         model = NoBiasModel(device=device, C=C, patch_size=params['patch_size'])
+    elif params['model'] == 'threeLayer':
+        model = ThreeLayerModel(device=device, C=C, patch_size=params['patch_size'])
     elif params['model'] == '2D':
         raise NotImplementedError("2D model is not yet implemented")
     else: 
@@ -128,8 +131,7 @@ if __name__ == '__main__':
     params['filetype'] = 'zarr' # hdf5, netcdf, or zarr
     params['C'] = 192
     params['subset_size'] = 400
-    params['restart'] = False
-    params['hash'] = None #"20240321_" + str(849421749)
+
     params['Lite'] = False
     params['daily'] = False
     params['forecast_length'] = 5

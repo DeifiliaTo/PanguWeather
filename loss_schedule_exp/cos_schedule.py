@@ -1,23 +1,25 @@
 import torch
+
+import sys
+# caution: path[0] is reserved for script path (or '' in REPL)
+sys.path.insert(1, '/home/hk-project-epais/ke4365/pangu-weather')
 from networks.pangu import PanguModel as PanguModel
 from networks.PanguLite import PanguModel as PanguModelLite
 from networks.relativeBias import PanguModel as RelativeBiasModel
 from networks.noBias import PanguModel as NoBiasModel
 from networks.Three_layers import PanguModel as ThreeLayerModel
 from networks.PanguLite2DAttention import PanguModel as PanguLite2D
-from networks.PanguLite2DAttentionPosEmbed import PanguModel as TwoDimPosEmbLite
 from networks.PositionalEmbedding import PanguModel as PositionalEmbedding
-from networks.TwoDimensional import PanguModel as TwoDimPosEmb
 from utils.data_loader_multifiles import get_data_loader
 import torch
 from torch.cuda.amp import autocast, GradScaler
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
-from timm.scheduler.cosine_lr import CosineLRScheduler
 import os
 import utils.eval as eval
 import time, datetime, json
 import gc
+import numpy as np
 
 def init_distributed(params):
     rank = int(os.getenv("SLURM_PROCID"))       # Get individual process ID.
@@ -54,7 +56,7 @@ def training_loop(params, device, slurm_localid, gpus_per_node):
     # Define patch size, data loader, model
     C          = params['C']
     twoDimensional = False
-    if params['model'] == '2D' or params['model'] == '2Dim192' or params['model'] == '2DPosEmb' or params['model'] == '2DPosEmbLite':
+    if params['model'] == '2D' or params['model'] == '2Dim192':
         twoDimensional = True
     train_data_loader, train_dataset, train_sampler = get_data_loader(params, params['train_data_path'], dist.is_initialized(), mode='train', device=device, patch_size=params['patch_size'], subset_size=params['subset_size'], twoD=twoDimensional)
     valid_data_loader, valid_dataset = get_data_loader(params, params['valid_data_path'], dist.is_initialized(), mode='validation', device=device, patch_size=params['patch_size'], subset_size=params['validation_subset_size'], twoD=twoDimensional)
@@ -73,10 +75,6 @@ def training_loop(params, device, slurm_localid, gpus_per_node):
         model = ThreeLayerModel(device=device, C=C, patch_size=params['patch_size'])
     elif params['model'] == 'positionEmbedding':
         model = PositionalEmbedding(device=device, C=C, patch_size=params['patch_size'])
-    elif params['model'] == '2DPosEmb':
-        model = TwoDimPosEmb(device=device, C=int(1.5*C), patch_size=params['patch_size'][1:])
-    elif params['model'] == '2DPosEmbLite':
-        model = TwoDimPosEmbLite(device=device, C=int(1.5*C), patch_size=params['patch_size'][1:])
     elif params['model'] == '2Dim192':
         model = PanguLite2D(device=device, C=int(C), patch_size=params['patch_size'][1:])
     else: 
@@ -94,8 +92,6 @@ def training_loop(params, device, slurm_localid, gpus_per_node):
         )
     
     optimizer = torch.optim.Adam(model.parameters(), lr=5e-4, weight_decay=3e-6)
-    #scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=7)
-    scheduler = CosineLRScheduler(optimizer, t_initial=params['num_epochs'], warmup_t=5, warmup_lr_init=1e-5)
 
     start = time.perf_counter() # Measure training time.
 
@@ -108,11 +104,11 @@ def training_loop(params, device, slurm_localid, gpus_per_node):
 
     if params['restart']:
         if rank == 0:
-            print("params['save_dir'][params['model']]", params['save_dir'][params['model']] + str(params['save_counter']))
-        state = torch.load(params['save_dir'][params['model']] + str(params['save_counter']) + '_' + params['model'] + params['hash'] + '.pt', map_location='cpu') #, map_location=f'cuda:{rank}')
+            print("params['save_dir']", params['save_dir'] + str(params['save_counter']))
+        state = torch.load(params['save_dir'] + str(params['save_counter']) + '_' + params['model'] + params['hash'] + '.pt', map_location='cpu')
         model.load_state_dict(state['model_state'])
         optimizer.load_state_dict(state['optimizer_state'])
-        scheduler.load_state_dict(state['scheduler_state'])
+        optimizer.param_groups[0]['lr'] = 2.5e-4
         start_epoch = state['epoch'] + 1
         model = model.to(device)
     else:
@@ -132,9 +128,21 @@ def training_loop(params, device, slurm_localid, gpus_per_node):
         save_counter = 0
 
     # Z, Q, T, U, V
-    pressure_weights = torch.tensor([3.00, 0.6, 1.5, 0.77, 0.54]).view(1, 5, 1, 1, 1).to(device)
-    surface_weights  = torch.tensor([1.5, 0.77, 0.66, 3.0]).view(1, 4, 1, 1).to(device)
+    rng = np.random.default_rng(seed=42)
+    
+    total_weights = np.zeros((num_epochs, 4))
+    n_cycles = 2
+    interval = 2*np.pi*n_cycles
+    fraction = interval / 4 / n_cycles
 
+    for i in range(4):
+        total_weights[:, i] = np.cos(np.linspace(-fraction*i, interval- fraction*i, num_epochs)) + 1.1
+    
+    # Z, Q, T, U, V
+    pressure_weights = total_weights[:, [1, 3, 2, 0, 0]] / total_weights[:, [1, 3, 2, 0, 0]].sum(1, keepdims=1) * (3.00 + 0.6 + 1.5 + 0.77 + 0.54)
+    # MSP, U, V, T
+    surface_weights = total_weights[:, [1, 0, 0, 2]] / total_weights[:, [1, 0, 0, 2]].sum(1, keepdims=1) * (1.5 + 0.77 + 0.66 + 3.0)#
+    
     scaler = GradScaler()
 
     early_stopping = 0 # tracks how many epochs have passed since the validation loss has improved
@@ -160,15 +168,16 @@ def training_loop(params, device, slurm_localid, gpus_per_node):
                 optimizer.zero_grad()
                 # Call the model and get the output
                 output, output_surface = model(input, input_surface)
-                if params['model'] == '2D' or params['model'] == '2Dim192' or params['model'] == '2DPosEmb' or params['model'] == '2DPosEmbLite':
+                if params['model'] == '2D' or params['model'] == '2Dim192':
                     output = output.reshape(-1, 5, 13, output.shape[-2], output.shape[-1])
                     target = target.reshape(-1, 5, 13, target.shape[-2], target.shape[-1])
 
                 # We use the MAE loss to train the model
-                # The weight of surface loss is 0.25
-                # Different weight can be applied for different fields if needed
-                output, output_surface = output * pressure_weights, output_surface * surface_weights
-                target, target_surface = target * pressure_weights, target_surface * surface_weights
+                pressure_weights_epoch = torch.tensor(pressure_weights[epoch - start_epoch]).to(torch.float32).view(1, 5, 1, 1, 1).to(device)
+                surface_weights_epoch  = torch.tensor(surface_weights[epoch - start_epoch]).to(torch.float32).view(1, 4, 1, 1).to(device)
+
+                output, output_surface = output * pressure_weights_epoch, output_surface * surface_weights_epoch
+                target, target_surface = target * pressure_weights_epoch, target_surface * surface_weights_epoch
                 loss = 1 * loss1(output, target) + 0.25 * loss2(output_surface, target_surface)
             torch.cuda.empty_cache()
             scaler.scale(loss).backward()
@@ -176,12 +185,6 @@ def training_loop(params, device, slurm_localid, gpus_per_node):
             scaler.step(optimizer)
             scaler.update()
             
-            
-                
-            # Update model parameters with Adam optimizer
-            # The learning rate is 5e-4 as in the paper, while the weight decay is 3e-6
-            
-            #print(optimizer.param_groups)
             
             dist.all_reduce(loss) # Allreduce rank-local mini-batch losses.
             
@@ -213,11 +216,10 @@ def training_loop(params, device, slurm_localid, gpus_per_node):
                     early_stopping = 0
                     best_val_loss = val_loss[0]
                     # save model to path
-                    save_path = params['save_dir'][params['model']] + str(save_counter) + "_" + params['model'] + params['hash'] + '.pt'
+                    save_path = params['save_dir'] + str(save_counter) + "_" + params['model'] + params['hash'] + '.pt'
                     state = {
                         'model_state': model.state_dict(),
                         'optimizer_state': optimizer.state_dict(),
-                        'scheduler_state': scheduler.state_dict(),
                         'epoch': epoch
                     }
                     torch.save(state, save_path)
@@ -251,13 +253,10 @@ def training_loop(params, device, slurm_localid, gpus_per_node):
                 print(f'| Validation time: {dt_validation : .5f}')
                 print(f'| Total samples: {total_samples :.3f}')
                 print(f'| Learning Rate: {lr :.7f}')
+                print(f'| Pressure_weights: {pressure_weights_epoch[0][0].flatten()[0] :.3f}, {pressure_weights_epoch[0][1].flatten()[0] :.3f}, {pressure_weights_epoch[0][2].flatten()[0] :.3f}, {pressure_weights_epoch[0][3].flatten()[0] :.3f}, {pressure_weights_epoch[0][4].flatten()[0] :.3f}')
+                print(f'| Surface_weights: {surface_weights_epoch[0][0].flatten()[0] :.3f}, {surface_weights_epoch[0][1].flatten()[0] :.3f}, {surface_weights_epoch[0][2].flatten()[0] :.3f}, {surface_weights_epoch[0][3].flatten()[0] :.3f}')
 
-                #if early_stopping > 7:
-                #    print(f"Stopping at epoch {epoch:03d} due to early stopping")
-                #    break
-            #torch.distributed.barrier()
-            #scheduler.step(val_loss[0])
-            scheduler.step(epoch+1)
+            torch.distributed.barrier()
                     
     # How can we verify that at least one model will be saved? Currently only saves when in case of the best validation loss
     dist.destroy_process_group()
@@ -272,19 +271,20 @@ if __name__ == '__main__':
     params['num_data_workers'] = 2
     params['data_distributed'] = True
     params['filetype'] = 'zarr' # hdf5, netcdf, or zarr
-    params['num_epochs'] = 5
+    params['num_epochs'] = 200
     num_epochs = params['num_epochs']
     params['C'] = 192
-    params['subset_size'] = None# 100000
+    params['subset_size'] = None # 100000
     params['validation_subset_size'] = None # 1500
-    params['restart'] = False
-    params['hash'] = "20240522_295466069"
+    params['restart'] = True
+    params['hash'] = "20240503_387727210"
     params['Lite'] = True
     params['daily'] = False
-    params['save_counter'] = 51 # 56# 61 #  100
+    params['save_counter'] = 83
+    params['model_name'] = 'cos_weights/'
 
     # Specify model
-    params['model'] = 'panguLite'
+    params['model'] = '2D'
     # pangu        = full run
     # panguLite    = light model
     # relativeBias = relative bias
@@ -294,7 +294,7 @@ if __name__ == '__main__':
     # positionEmbedding     = absolute position embedding
 
     # Save directory
-    base_save_dir = '/hkfs/work/workspace/scratch/ke4365-pangu/pangu-weather/trained_models/panguTime/'
+    base_save_dir = '/hkfs/work/workspace/scratch/ke4365-pangu/pangu-weather/loss_schedule_exp/trained_models/'
         
     
     # Set seeds for reproducability
@@ -328,45 +328,34 @@ if __name__ == '__main__':
         dist.broadcast_object_list(hash_key_list, src=0, group=group)
     
 
-    params['save_dir'] = {
-        'pangu':        base_save_dir + 'panguMoreData/' + hash_key + '/',
-        'panguLite':    base_save_dir + 'panguLite/' + hash_key + '/',
-        'relativeBias': base_save_dir + 'relativeBiasLite/' + hash_key + '/',
-        'noBiasLite':   base_save_dir + 'noBiasLite/' + hash_key + '/',
-        '2D':           base_save_dir + 'twoDimensionalLite/' + hash_key + '/',
-        'threeLayer':   base_save_dir + 'threeLayerLite/' + hash_key + '/',
-        'positionEmbedding':   base_save_dir + 'posEmbeddingLite/' + hash_key + '/',
-        '2Dim192':           base_save_dir + 'twoDim192Lite/' + hash_key + '/',
-        '2DPosEmb': base_save_dir + 'twoDimPosEmb/' + hash_key + '/',
-        '2DPosEmbLite': base_save_dir + 'twoDimPosEmbLite/' + hash_key + '/',
-    }
+    params['save_dir'] = base_save_dir + params['model_name'] + hash_key + '/' 
             
     if rank == 0:
-        print("Model will be saved in", params['save_dir'][params['model']])
+        print("Model will be saved in", params['save_dir'])
 
         # If starting a new run
         if not params['restart']:
             try:
-                os.mkdir(params['save_dir'][params['model']])
+                os.mkdir(params['save_dir'])
             except:
                 raise ValueError("Could not create directory")
     
             # dump parameters into json directory
-            with open(params['save_dir'][params['model']] + "params_" + hash_key + '.json', 'w') as params_file:
+            with open(params['save_dir'] + "params_" + hash_key + '.json', 'w') as params_file:
                 json.dump(params, params_file)
         
     # initialize patch size: currently, patch size is only (2, 8, 8) for PanguLite. PS is (2, 4, 4) for all other sizes.
     if params['Lite'] == True:
         params['patch_size'] = (2, 8, 8)
         if params['model'] == '2D' or params['model'] == '2Dim192':
-            params['batch_size'] = 1
+            params['batch_size'] = 12
         else:
-            params['batch_size'] = 1
+            params['batch_size'] = 6
         params['lat_crop']   = (3, 4)
         params['lon_crop']   = (0, 0)
     else:
         params['patch_size'] = (2, 4, 4)
-        params['batch_size'] = 1
+        params['batch_size'] = 2
         params['lat_crop']   = (1, 2)
         params['lon_crop']   = (0, 0)
 

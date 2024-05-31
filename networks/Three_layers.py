@@ -2,7 +2,7 @@ import sys
 sys.path.append("/hkfs/work/workspace/scratch/ke4365-pangu/pangu-weather/networks/")
 from Modules.Embedding import PatchEmbedding, PatchRecovery
 from Modules.Sampling import UpSample, DownSample
-from Modules.Attention import EarthSpecificLayerNoBias
+from Modules.Attention import EarthSpecificLayerAbsolute
 
 from torch import nn
 import torch.nn as nn
@@ -36,15 +36,19 @@ class PanguModel(nn.Module):
     self._input_layer = PatchEmbedding(patch_size, dim=self.C, device=device)
 
     # Four basic layers
-    self.layer1 = EarthSpecificLayerNoBias(2, self.C, drop_list[:2], 6,  input_shape=[8, 93], device=device, input_resolution=(8, 93, 180), window_size=torch.tensor([2, 6, 12]))
-    self.layer2 = EarthSpecificLayerNoBias(6, 2*self.C, drop_list[2:], 12, input_shape=[8, 46], device=device, input_resolution=(8, 46, 90), window_size=torch.tensor([2, 6, 12]))
-    self.layer3 = EarthSpecificLayerNoBias(6, 2*self.C, drop_list[2:], 12, input_shape=[8, 46], device=device, input_resolution=(8, 46, 90), window_size=torch.tensor([2, 6, 12]))
-    self.layer4 = EarthSpecificLayerNoBias(2, self.C, drop_list[:2], 6,  input_shape=[8, 93], device=device, input_resolution=(8, 93, 180), window_size=torch.tensor([2, 6, 12]))
+    self.layer1 = EarthSpecificLayerAbsolute(2, self.C, drop_list[:2], 6,  input_shape=[8, 93], device=device, input_resolution=(8, 93, 180), window_size=torch.tensor([2, 6, 12]))
+    self.layer2 = EarthSpecificLayerAbsolute(6, 2*self.C, drop_list[2:], 12, input_shape=[8, 46], device=device, input_resolution=(8, 46, 90), window_size=torch.tensor([2, 6, 12]))
+    self.layer3 = EarthSpecificLayerAbsolute(4, 4*self.C, drop_list[2:], 12, input_shape=[8, 23], device=device, input_resolution=(8, 23, 45), window_size=torch.tensor([2, 6, 12]))
+    self.layer4 = EarthSpecificLayerAbsolute(4, 4*self.C, drop_list[2:], 12, input_shape=[8, 23], device=device, input_resolution=(8, 23, 45), window_size=torch.tensor([2, 6, 12]))
+    self.layer5 = EarthSpecificLayerAbsolute(6, 2*self.C, drop_list[2:], 12, input_shape=[8, 46], device=device, input_resolution=(8, 46, 90), window_size=torch.tensor([2, 6, 12]))
+    self.layer6 = EarthSpecificLayerAbsolute(2, self.C, drop_list[:2], 6,  input_shape=[8, 93], device=device, input_resolution=(8, 93, 180), window_size=torch.tensor([2, 6, 12]))
 
     # Upsample and downsample
-    self.upsample = UpSample(self.C*2, self.C, nHeight=8, nLat=46, nLon=90, height_crop=(0,0), lat_crop=(0, 1), lon_crop=(0, 0))
+    self.upsample  = UpSample(self.C*2, self.C, nHeight=8, nLat=46, nLon=90, height_crop=(0,0), lat_crop=(0, 1), lon_crop=(0, 0))
+    self.upsample2 = UpSample(self.C*4, 2*self.C, nHeight=8, nLat=23, nLon=45, height_crop=(0,0), lat_crop=(0, 0), lon_crop=(0, 0))
 
-    self.downsample = DownSample(self.C, downsampling=(2,2))
+    self.downsample  = DownSample(self.C, downsampling=(2,2))
+    self.downsample2 = DownSample(self.C*2, downsampling=(2,2))
     
     # Patch Recovery
     self._output_layer = PatchRecovery(self.patch_size, dim=2*self.C) # added patch size
@@ -68,15 +72,28 @@ class PanguModel(nn.Module):
     # Layer 2, shape (8, 180, 91, 2C), C = 192 as in the original paper
     x = self.layer2(x, 8, 46, 90) 
 
+    skip2 = x.clone()
+
+    x = self.downsample2(x, 8, 46, 90)
+
+    x = self.layer3(x, 8, 23, 45)
+    
+    x = self.layer4(x, 8, 23, 45)
+
+    x = self.upsample2(x)
+    
+    x = x + skip2 # How add in skip connection?
+    
     # Decoder, composed of two layers
-    # Layer 3, shape (8, 180, 91, 2C), C = 192 as in the original paper
-    x = self.layer3(x, 8, 46, 90) 
+    
+    # Layer 3, shape (8, 180, 91, 4C), C = 192 as in the original paper
+    x = self.layer5(x, 8, 46, 90) 
 
     # Upsample from (8, 180, 91) to (8, 360, 181)
     x = self.upsample(x)
 
     # Layer 4, shape (8, 360, 181, 2C), C = 192 as in the original paper
-    x = self.layer4(x, 8, 91, 180) 
+    x = self.layer6(x, 8, 91, 180) 
 
     # Skip connect, in last dimension(C from 192 to 384)
     x = torch.cat((skip, x), dim=2)

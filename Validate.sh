@@ -6,6 +6,7 @@
 #SBATCH --ntasks-per-node=4
 #SBATCH --account='hk-project-p0021348'
 #SBATCH --output='validate.out'
+#SBATCH --job-name='val'
 
 module purge # Unload all models.
 module load jupyter/tensorflow eccodes-2.30.2_i22_ompi40
@@ -21,4 +22,6 @@ master_addr=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1)
 export MASTER_ADDR=$master_addr
 echo "MASTER_ADDR="$MASTER_ADDR
 
-srun python -u Validate.py --path_to_model='/home/hk-project-epais/ke4365/pangu-weather/trained_models/pangu/20240404_884476961/119_pangu20240404_884476961.pt' --model='pangu'
+
+
+srun python -u Validate.py --path_to_model='/home/hk-project-epais/ke4365/pangu-weather/trained_models/pangu/20240414_884476961/158_pangu20240414_884476961.pt' --model='pangu'
