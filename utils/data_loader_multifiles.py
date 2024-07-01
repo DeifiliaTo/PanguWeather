@@ -44,52 +44,91 @@
 #Karthik Kashinath - NVIDIA Corporation 
 #Animashree Anandkumar - California Institute of Technology, NVIDIA Corporation
 
-import logging
 import glob
-import torch
+import logging
+
+import h5py
 import numpy as np
+import pandas as pd
+import torch
+import xarray as xr
 from torch.utils.data import DataLoader, Dataset, Subset
 from torch.utils.data.distributed import DistributedSampler
-import h5py
-import pandas as pd
-import xarray as xr
+
 #import cv2
-#from utils.img_utils import reshape_fields
 
 # params: dictionary
 # files_pattern: train_data_path
 # distributed: = dist.is_initialized() = True/False from the environment
 # train = True/False boolean
 
-def get_data_loader(params, files_pattern, distributed, mode, device, patch_size, subset_size=None, forecast_length=1, twoD=False):
+def get_data_loader(params, file_path, distributed, mode, device, patch_size, subset_size=None, forecast_length=1, two_dimensional=False):
+    """
+    Return data loader for 2 or 3D dataset.
+    
+    params: Dict
+            configuration file
+    file_path: String
+            path to data directory
+    distributed: bool
+            flag for DDP
+    mode: String
+            of value 'training', 'testing', 'validation'
+    device: String
+            device that the code is running/offloaded on
+    patch_size: Tuple(int, int, Optional[int])
+    forecast_length: int
+            For training, always 1. For validation, defines the number of autoregressive steps to roll-out to.
+    two_dimensional: bool
+            Flag for 2D vs 3D model.
 
-  if not twoD:
-      dataset = GetDataset(params, files_pattern, mode, device, patch_size, forecast_length=forecast_length)
-  else:
-      dataset = Get2DDataset(params, files_pattern, mode, device, patch_size, forecast_length=forecast_length)
+    """
+    if not two_dimensional:
+        dataset = GetDataset(params, file_path, mode, device, patch_size, forecast_length=forecast_length)
+    else:
+        dataset = Get2DDataset(params, file_path, mode, device, patch_size, forecast_length=forecast_length)
 
-  
-  # If we are setting a subset
-  if subset_size is not None:
-      subset_indices = torch.randperm(len(dataset))[:subset_size]
-      dataset = Subset(dataset, subset_indices)
-  sampler = DistributedSampler(dataset, shuffle=True) if distributed else None
-  
-  dataloader = DataLoader(dataset,
-                          batch_size=int(params['batch_size']),
-                          num_workers=params['num_data_workers'],
-                          shuffle=(sampler is None),
-                          sampler=sampler,
-                          drop_last=False,
-                          pin_memory=torch.cuda.is_available())
+    
+    # If we are setting a subset
+    if subset_size is not None:
+        subset_indices = torch.randperm(len(dataset))[:subset_size]
+        dataset = Subset(dataset, subset_indices)
+    sampler = DistributedSampler(dataset, shuffle=True) if distributed else None
+    
+    dataloader = DataLoader(dataset,
+                            batch_size=int(params['batch_size']),
+                            num_workers=params['num_data_workers'],
+                            shuffle=(sampler is None),
+                            sampler=sampler,
+                            drop_last=False,
+                            pin_memory=torch.cuda.is_available())
 
-  if mode == 'train':
-    return dataloader, dataset, sampler
-  else:
-    return dataloader, dataset
+    if mode == 'train':
+        return dataloader, dataset, sampler
+    else:
+        return dataloader, dataset
 
 class GetDataset(Dataset):
+    """Define 3D dataset."""
+    
     def __init__(self, params, file_path, mode, device, patch_size, forecast_length=1):
+        """
+        initialize.
+
+        params: Dict
+            configuration file
+        file_path: String
+                path to data directory
+        distributed: bool
+                flag for DDP
+        mode: String
+                of value 'training', 'testing', 'validation'
+        device: String
+                device that the code is running/offloaded on
+        patch_size: Tuple(int, int, Optional[int])
+        forecast_length: int
+                For training, always 1. For validation, defines the number of autoregressive steps to roll-out to.
+        """
         self.params = params
         self.file_path = file_path
         self.mode = mode
@@ -121,12 +160,13 @@ class GetDataset(Dataset):
             raise ValueError("File type must be hdf5, netcdf or zarr.")
         self.patch_size = patch_size
         self.device = device
-        try:
+        if "normalize" in params.keys():
             self.normalize = params.normalize
-        except:
+        else:
             self.normalize = True #by default turn on normalization if not specified in config
 
     def _get_files_stats(self, file_path, dt=6, daily=False, lite=False, mode='train'):
+        """Filter desired time points based on parameters and return file statistics."""
         if self.filetype == 'hdf5':
             self.files_paths_pressure = glob.glob(file_path + "/????.h5") # indicates file paths for pressure levels
             self.files_paths_surface = glob.glob(file_path + "/single_????.h5") # indicates file paths for pressure levels
@@ -209,6 +249,7 @@ class GetDataset(Dataset):
         logging.info("Delta t: {} hours".format(6*self.dt))
         
     def _open_pressure_file(self, file_idx):
+        """Open HDF5 or NetCDF pressure file."""
         if self.filetype == 'hdf5':
             _file = h5py.File(self.files_paths_pressure[file_idx], 'r')
             self.files_pressure[file_idx] = _file
@@ -217,6 +258,7 @@ class GetDataset(Dataset):
             self.files_pressure[file_idx] = _file
             
     def _open_surface_file(self, file_idx):
+        """Open HDF5 or NetCDF surface file."""
         if self.filetype == 'hdf5':
             _file = h5py.File(self.files_paths_surface[file_idx], 'r')
             self.files_surface[file_idx] = _file
@@ -225,9 +267,21 @@ class GetDataset(Dataset):
             self.files_surface[file_idx] = _file
       
     def __len__(self):
+        """Return total number of samples."""
         return self.n_samples_total - self.forecast_length * self.dt // self.deltaTDivisor  # -1 to avoid last data point
     
-    def __getitem__(self, global_idx, normalize=True, twoDimensional=False):
+    def __getitem__(self, global_idx, normalize=True, two_dimensional=False):
+        """
+        Return single input, output.
+
+        global_idx: int
+                global index of item
+        normalize: bool
+                flag for whether the data should be normalized
+        two_dimensional: bool
+                flag for whether the data should be processed for a 2D model.
+                if not, 3D data is returned.
+        """
         # TODO: not yet safety checked for edge cases or other errors
         if self.filetype == 'hdf5':
             year_idx  = int(global_idx/self.n_samples_per_year) #which year we are on
@@ -330,7 +384,7 @@ class GetDataset(Dataset):
             t1, t2, t3, t4 = self._pad_data(t1, t2, t3, t4)
             return t1, t2, t3, t4
         
-        elif self.filetype == 'zarr' and not twoDimensional:
+        elif self.filetype == 'zarr' and not two_dimensional:
             output_pressure = []
             output_surface  = []
             step = self.dt
@@ -371,6 +425,14 @@ class GetDataset(Dataset):
             return input_pressure, input_surface, output_pressure, output_surface
         
     def _pad_data(self, t1, t2):
+        """
+        Perform padding for outermost patching step.
+
+        t1: Tensor
+                pressure-level tensors
+        t2: Tensor
+                surface-level tensors
+        """
         # perform padding for patch embedding step
         input_shape = t1.shape  # shape is (5 variables x 13 pressure levels x 721 latitude x 1440 longitude)
         
@@ -390,6 +452,8 @@ class GetDataset(Dataset):
         return t1, t2
     
 class Get2DDataset(GetDataset):
+    """Dataloader for 2D model."""
+
     def __init__(self, params, file_path, mode, device, patch_size, forecast_length=1):
         super().__init__(params, file_path, mode, device, patch_size, forecast_length=1)
         if params['Lite']:
@@ -402,7 +466,18 @@ class Get2DDataset(GetDataset):
         self.s_mean = np.load(params['surface_static_data_path'])[0].reshape(4, 1, 1)
         self.s_std  = np.load(params['surface_static_data_path'])[1].reshape(4, 1, 1)
         
-    def __getitem__(self, global_idx, normalize=True, twoDimensional=False):
+    def __getitem__(self, global_idx, normalize=True, two_dimensional=False):
+        """
+        Return an input output pair.
+
+        global_idx: int
+                global index of item
+        normalize: bool
+                flag for whether the data should be normalized
+        two_dimensional: bool
+                flag for whether the data should be processed for a 2D model.
+                if not, 3D data is returned.
+        """
         # TODO: not yet safety checked for edge cases or other errors
         output_pressure = []
         output_surface  = []

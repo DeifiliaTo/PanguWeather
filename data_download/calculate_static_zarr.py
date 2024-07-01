@@ -1,7 +1,7 @@
-import xarray as xr
-import numpy as np
-import glob
 import random
+
+import numpy as np
+import xarray as xr
 
 data_dir = '/lsdf/kit/imk-tro/projects/Gruppe_Quinting/ec.era5/1959-2023_01_10-wb13-6h-1440x721.zarr/'
 n_random = 200

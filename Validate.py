@@ -1,18 +1,18 @@
+import argparse
+import os
+
 import torch
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+
+import utils.eval as eval
+from networks.noBias import PanguModel as NoBiasModel
 from networks.pangu import PanguModel as PanguModel
 from networks.PanguLite import PanguModel as PanguModelLite
 from networks.relativeBias import PanguModel as RelativeBiasModel
-from networks.noBias import PanguModel as NoBiasModel
 from networks.Three_layers import PanguModel as ThreeLayerModel
 from utils.data_loader_multifiles import get_data_loader
-import torch
-import torch.distributed as dist
-from utils.data_loader_multifiles import get_data_loader
-from torch.nn.parallel import DistributedDataParallel as DDP
-import os
-import utils.eval as eval
-import time
-import argparse
+
 
 def init_distributed(params):
     rank = int(os.getenv("SLURM_PROCID"))       # Get individual process ID.
@@ -76,8 +76,6 @@ def validation(params, device, slurm_localid, gpus_per_node):
                 find_unused_parameters=False
         )
 
-    start = time.perf_counter() # Measure training time.
-
     if dist.is_initialized():
         rank = dist.get_rank()
     else:
@@ -87,16 +85,13 @@ def validation(params, device, slurm_localid, gpus_per_node):
     model.load_state_dict(state['model_state'])
 
     # Training loop
-    valid_loss_history = []
-    best_val_loss = 100000           # Arbitrary large number
-
     loss1 = torch.nn.L1Loss()
     loss2 = torch.nn.L1Loss()
 
     model.eval()
     with torch.no_grad():
         # Get rank-local numbers of correctly classified and overall samples in training and validation set.
-        MSE, acc, total_samples, dt_validation = eval.get_validation_loss(model, test_data_loader, device, loss1, loss2, lat_crop=params['lat_crop'], lon_crop=params['lon_crop'], forecast_length=params['forecast_length'])
+        MSE, acc, total_samples, dt_validation = eval.get_validation_loss(model, test_data_loader, device, lat_crop=params['lat_crop'], lon_crop=params['lon_crop'], forecast_length=params['forecast_length'])
         
         if rank == 0:
             print(f'| MSE T850: {MSE[0][0] :.3f}, {MSE[0][1] :.3f}, {MSE[0][2] :.3f}, {MSE[0][3] :.3f}, {MSE[0][4] :.3f}')
@@ -157,7 +152,7 @@ if __name__ == '__main__':
         print("Reading model from", params['model'])
 
     # initialize patch size: currently, patch size is only (2, 8, 8) for PanguLite. PS is (2, 4, 4) for all other sizes.
-    if params['Lite'] == True:
+    if params['Lite']:
         params['patch_size'] = (2, 8, 8)
         params['batch_size'] = 6
         params['lat_crop']   = (3, 4)

@@ -1,7 +1,8 @@
-import xarray as xr
-import numpy as np
 import glob
 import random
+
+import numpy as np
+import xarray as xr
 
 # List of files
 file_list_plevel  = glob.glob('/lsdf/kit/imk-tro/projects/Gruppe_Quinting/ec.era5/*_pl.nc') 
@@ -45,7 +46,7 @@ std_plevel  = std_plevel[0, :]
 # Save the results
 output_file = '/hkfs/work/workspace/scratch/ke4365-pangu/PANGU_ERA5_data_v0/static/pressure_means_netcdf.npy'
 np.save(output_file, np.stack([mean_plevel, std_plevel]))
-print(f"Output of pressure levels saved in /hkfs/work/workspace/scratch/ke4365-pangu/PANGU_ERA5_data_v0/static/pressure_means_netcdf.npy")
+print("Output of pressure levels saved in /hkfs/work/workspace/scratch/ke4365-pangu/PANGU_ERA5_data_v0/static/pressure_means_netcdf.npy")
 
 # Surface values
 # Initialize variables for calculation

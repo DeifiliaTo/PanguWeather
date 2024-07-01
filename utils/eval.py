@@ -1,6 +1,8 @@
-import torch
-import numpy as np
 import time
+
+import numpy as np
+import torch
+
 
 def get_loss(model, data_loader, device, loss1, loss2, lat_crop, lon_crop, world_size=4, pressure_weights_epoch=None, surface_weights_epoch=None):
     """
@@ -14,13 +16,37 @@ def get_loss(model, data_loader, device, loss1, loss2, lat_crop, lon_crop, world
             Model.
     data_loader : torch.utils.data.Dataloader
                   Dataloader.
-    
+    device : String
+            device (cpu or gpu) that the code is running on #
+    lat_crop : Tuple(int, int)
+            cropping along the latitude dimension of the data required to obtain original dimensions
+            i.e., if the original image has size (721, 1440), and the patch size is (8, 8),
+            the cropping will be (3, 4) for latitude.
+    lon_crop : Tuple(int, int)
+            cropping along the longitude dimension of the data required to obtain original dimensions
+            i.e., if the original image has size (721, 1440), and the patch size is (8, 8),
+            the cropping will be (0, 0) for longitude.
+    world_size : int
+            number of parallel processes, i.e., individual GPUs.
+    pressure_weights_epoch: tuple(float, float, float, float, float)
+            weighting factor for the pressure variables (Z, Q, T, U, V)
+    surface_weights_epoch: tuple(float, float, float, float, float)
+            weighting factor for the surface variables (MSLP, U10, V10, T2M)
+
     Returns
     -------
-    int : The number of correctly predicted samples.
-    int : The overall number of samples in the dataset.
+        l2_loss: float
+                normalized MSE
+        mse : Tuple(float)
+                The mean squared errors of hard-coded atmospheric variables
+        acc : Tuple(float)
+                The anomaly correlation coefficient
+        time : float
+                time to run validation script
+        num_samples : int
+                total number of samples
+    
     """
-
     loss = torch.zeros(1).to(device)
 
     static_plevel = np.load('/hkfs/work/workspace/scratch/ke4365-pangu/PANGU_ERA5_data_v0/static/pressure_zarr.npy')
@@ -30,16 +56,16 @@ def get_loss(model, data_loader, device, loss1, loss2, lat_crop, lon_crop, world
     static_slevel = np.load('/hkfs/work/workspace/scratch/ke4365-pangu/PANGU_ERA5_data_v0/static/surface_zarr.npy')
     mean_slevel   = torch.tensor(static_slevel[0].reshape(1, 4, 1, 1)).to(device)
     std_slevel    = torch.tensor(static_slevel[1].reshape(1, 4, 1, 1)).to(device)
-\
+
     climatology_plevel = torch.tensor(np.load('/hkfs/work/workspace/scratch/ke4365-pangu/PANGU_ERA5_data_v0/static/climatology/pressure/pressure_climatology.npy')).to(device)
     climatology_slevel = torch.tensor(np.load('/hkfs/work/workspace/scratch/ke4365-pangu/PANGU_ERA5_data_v0/static/climatology/surface/surface_climatology.npy')).to(device)
 
     climatology_plevel = climatology_plevel - mean_plevel
     climatology_slevel = climatology_slevel - mean_slevel
 
-    Nlat = 721
-    weights = torch.tensor(calc_weight(Nlat, np.linspace(np.pi/2.0, -np.pi/2.0, Nlat))).to(torch.float32).to(device)
-    SE = {
+    n_lat = 721
+    weights = torch.tensor(calc_weight(n_lat)).to(torch.float32).to(device)
+    mse = {
         'T2M':  torch.zeros(1).to(device),
         'U10':  torch.zeros(1).to(device),
         'V10':  torch.zeros(1).to(device),
@@ -50,7 +76,7 @@ def get_loss(model, data_loader, device, loss1, loss2, lat_crop, lon_crop, world
         'Q850': torch.zeros(1).to(device),
         'MSL':  torch.zeros(1).to(device)
     }
-    ACC = {
+    acc = {
         'T2M':  torch.zeros(1).to(device),
         'U10':  torch.zeros(1).to(device),
         'V10':  torch.zeros(1).to(device),
@@ -94,48 +120,33 @@ def get_loss(model, data_loader, device, loss1, loss2, lat_crop, lon_crop, world
         target, target_surface = target / pressure_weights_epoch, target_surface / surface_weights_epoch
 
 
-        SE['T850'][0] += calc_SE(output, target, variable='T', pressure_level=850, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
-        SE['Z500'][0] += calc_SE(output, target, variable='Z', pressure_level=500, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
-        SE['T2M'][0]  += calc_SE(output_surface, target_surface, variable='T2M', upper_variable=False, pressure_level=None, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
-        SE['U10'][0]  += calc_SE(output_surface, target_surface, variable='U10', upper_variable=False, pressure_level=None, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
-        SE['V10'][0]  += calc_SE(output_surface, target_surface, variable='V10', upper_variable=False, pressure_level=None, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
-        SE['MSL'][0]  += calc_SE(output_surface, target_surface, variable='MSL', upper_variable=False, pressure_level=None, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
-        SE['U850'][0] += calc_SE(output, target, variable='U', pressure_level=850, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
-        SE['V850'][0] += calc_SE(output, target, variable='V', pressure_level=850, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
-        SE['Q850'][0] += calc_SE(output, target, variable='Q', pressure_level=850, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+        mse['T850'][0] += calc_mse(output, target, variable='T', pressure_level=850, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+        mse['Z500'][0] += calc_mse(output, target, variable='Z', pressure_level=500, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+        mse['T2M'][0]  += calc_mse(output_surface, target_surface, variable='T2M', upper_variable=False, pressure_level=None, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+        mse['U10'][0]  += calc_mse(output_surface, target_surface, variable='U10', upper_variable=False, pressure_level=None, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+        mse['V10'][0]  += calc_mse(output_surface, target_surface, variable='V10', upper_variable=False, pressure_level=None, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+        mse['MSL'][0]  += calc_mse(output_surface, target_surface, variable='MSL', upper_variable=False, pressure_level=None, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+        mse['U850'][0] += calc_mse(output, target, variable='U', pressure_level=850, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+        mse['V850'][0] += calc_mse(output, target, variable='V', pressure_level=850, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+        mse['Q850'][0] += calc_mse(output, target, variable='Q', pressure_level=850, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
 
-        ACC['T850'][0] += calc_ACC(output, target, variable='T', pressure_level=850, weights=weights, climatology_plevel=climatology_plevel, climatology_slevel=climatology_slevel,  std_plevel=std_plevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
-        ACC['Z500'][0] += calc_ACC(output, target, variable='Z', pressure_level=500, weights=weights, climatology_plevel=climatology_plevel, climatology_slevel=climatology_slevel,  std_plevel=std_plevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
-        ACC['T2M'][0]  += calc_ACC(output_surface, target_surface, variable='T2M', upper_variable=False, pressure_level=None, weights=weights, climatology_plevel=climatology_plevel, std_plevel=std_plevel, std_slevel=std_slevel, climatology_slevel=climatology_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
-        ACC['U10'][0]  += calc_ACC(output_surface, target_surface, variable='U10', upper_variable=False, pressure_level=None, weights=weights, climatology_plevel=climatology_plevel, std_plevel=std_plevel, std_slevel=std_slevel, climatology_slevel=climatology_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
-        ACC['V10'][0]  += calc_ACC(output_surface, target_surface, variable='V10', upper_variable=False, pressure_level=None, weights=weights, climatology_plevel=climatology_plevel, std_plevel=std_plevel, std_slevel=std_slevel, climatology_slevel=climatology_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
-        ACC['MSL'][0]  += calc_ACC(output_surface, target_surface, variable='MSL', upper_variable=False, pressure_level=None, weights=weights, climatology_plevel=climatology_plevel, std_plevel=std_plevel, std_slevel=std_slevel, climatology_slevel=climatology_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
-        ACC['U850'][0] += calc_ACC(output, target, variable='U', pressure_level=850, weights=weights, climatology_plevel=climatology_plevel, climatology_slevel=climatology_slevel,  std_plevel=std_plevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
-        ACC['V850'][0] += calc_ACC(output, target, variable='V', pressure_level=850, weights=weights, climatology_plevel=climatology_plevel, climatology_slevel=climatology_slevel,  std_plevel=std_plevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
-        ACC['Q850'][0] += calc_ACC(output, target, variable='Q', pressure_level=850, weights=weights, climatology_plevel=climatology_plevel, climatology_slevel=climatology_slevel,  std_plevel=std_plevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+        acc['T850'][0] += calc_acc(output, target, variable='T', pressure_level=850, weights=weights, climatology_plevel=climatology_plevel, climatology_slevel=climatology_slevel,  std_plevel=std_plevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+        acc['Z500'][0] += calc_acc(output, target, variable='Z', pressure_level=500, weights=weights, climatology_plevel=climatology_plevel, climatology_slevel=climatology_slevel,  std_plevel=std_plevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+        acc['T2M'][0]  += calc_acc(output_surface, target_surface, variable='T2M', upper_variable=False, pressure_level=None, weights=weights, climatology_plevel=climatology_plevel, std_plevel=std_plevel, std_slevel=std_slevel, climatology_slevel=climatology_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+        acc['U10'][0]  += calc_acc(output_surface, target_surface, variable='U10', upper_variable=False, pressure_level=None, weights=weights, climatology_plevel=climatology_plevel, std_plevel=std_plevel, std_slevel=std_slevel, climatology_slevel=climatology_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+        acc['V10'][0]  += calc_acc(output_surface, target_surface, variable='V10', upper_variable=False, pressure_level=None, weights=weights, climatology_plevel=climatology_plevel, std_plevel=std_plevel, std_slevel=std_slevel, climatology_slevel=climatology_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+        acc['MSL'][0]  += calc_acc(output_surface, target_surface, variable='MSL', upper_variable=False, pressure_level=None, weights=weights, climatology_plevel=climatology_plevel, std_plevel=std_plevel, std_slevel=std_slevel, climatology_slevel=climatology_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+        acc['U850'][0] += calc_acc(output, target, variable='U', pressure_level=850, weights=weights, climatology_plevel=climatology_plevel, climatology_slevel=climatology_slevel,  std_plevel=std_plevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+        acc['V850'][0] += calc_acc(output, target, variable='V', pressure_level=850, weights=weights, climatology_plevel=climatology_plevel, climatology_slevel=climatology_slevel,  std_plevel=std_plevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+        acc['Q850'][0] += calc_acc(output, target, variable='Q', pressure_level=850, weights=weights, climatology_plevel=climatology_plevel, climatology_slevel=climatology_slevel,  std_plevel=std_plevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
 
         total_samples[0] += input.shape[0]
     
     torch.distributed.all_reduce(total_samples)
     torch.distributed.all_reduce(loss)
-    torch.distributed.all_reduce(SE['T850'])
-    torch.distributed.all_reduce(SE['Z500'])
-    torch.distributed.all_reduce(SE['T2M'])
-    torch.distributed.all_reduce(SE['U10'])
-    torch.distributed.all_reduce(SE['V10'])
-    torch.distributed.all_reduce(SE['U850'])
-    torch.distributed.all_reduce(SE['V850'])
-    torch.distributed.all_reduce(SE['Q850'])
-    torch.distributed.all_reduce(SE['MSL'])
-    torch.distributed.all_reduce(ACC['T850'])
-    torch.distributed.all_reduce(ACC['Z500'])
-    torch.distributed.all_reduce(ACC['T2M'])
-    torch.distributed.all_reduce(ACC['U10'])
-    torch.distributed.all_reduce(ACC['V10'])
-    torch.distributed.all_reduce(ACC['U850'])
-    torch.distributed.all_reduce(ACC['V850'])
-    torch.distributed.all_reduce(ACC['Q850'])
-    torch.distributed.all_reduce(ACC['MSL'])
+    for variable in ['T850', 'Z500', 'T2M', 'U10', 'V10', 'U850', 'V850', 'Q850', 'MSL']:
+        torch.distributed.all_reduce(mse[variable])
+        torch.distributed.all_reduce(acc[variable])
 
     end_validation_time = time.perf_counter()
 
@@ -144,30 +155,14 @@ def get_loss(model, data_loader, device, loss1, loss2, lat_crop, lon_crop, world
     loss /= len(data_loader)
     
     # Reduce all values on each core
-    SE['T850'] = torch.sqrt(SE['T850']/total_samples)
-    SE['Z500'] = torch.sqrt(SE['Z500']/total_samples)
-    SE['U850'] = torch.sqrt(SE['U850']/total_samples)
-    SE['V850'] = torch.sqrt(SE['V850']/total_samples)
-    SE['Q850'] = torch.sqrt(SE['Q850']/total_samples)
-    SE['T2M']  = torch.sqrt(SE['T2M']/total_samples)
-    SE['U10']  = torch.sqrt(SE['U10']/total_samples)
-    SE['V10']  = torch.sqrt(SE['V10']/total_samples)
-    SE['MSL']  = torch.sqrt(SE['MSL']/total_samples)
+    for variable in ['T850', 'Z500', 'T2M', 'U10', 'V10', 'U850', 'V850', 'Q850', 'MSL']:
+        mse[variable] = torch.sqrt(mse[variable]/total_samples)
+        acc[variable] = acc[variable] / total_samples
 
-    ACC['T850'] /= total_samples
-    ACC['Z500'] /= total_samples
-    ACC['U850'] /= total_samples
-    ACC['V850'] /= total_samples
-    ACC['Q850'] /= total_samples
-    ACC['T2M'] /= total_samples
-    ACC['U10'] /= total_samples
-    ACC['V10'] /= total_samples
-    ACC['MSL'] /= total_samples
-
-    return loss.tolist(), (SE['T850'].tolist(), SE['Z500'].tolist(), SE['U850'].tolist(), SE['V850'].tolist(), SE['Q850'].tolist(), SE['T2M'].tolist(), SE['U10'].tolist(), SE['V10'].tolist(), SE['MSL'].tolist()), (ACC['T850'].tolist(), ACC['Z500'].tolist(), ACC['U850'].tolist(), ACC['V850'].tolist(), ACC['Q850'].tolist(), ACC['T2M'].tolist(), ACC['U10'].tolist(), ACC['V10'].tolist(), ACC['MSL'].tolist()), total_samples.item(), end_validation_time - start_validation_time
+    return loss.tolist(), (mse['T850'].tolist(), mse['Z500'].tolist(), mse['U850'].tolist(), mse['V850'].tolist(), mse['Q850'].tolist(), mse['T2M'].tolist(), mse['U10'].tolist(), mse['V10'].tolist(), mse['MSL'].tolist()), (acc['T850'].tolist(), acc['Z500'].tolist(), acc['U850'].tolist(), acc['V850'].tolist(), acc['Q850'].tolist(), acc['T2M'].tolist(), acc['U10'].tolist(), acc['V10'].tolist(), acc['MSL'].tolist()), total_samples.item(), end_validation_time - start_validation_time
 
 
-def get_validation_loss(model, data_loader, device, loss1, loss2, lat_crop, lon_crop, world_size=4, forecast_length=5):
+def get_validation_loss(model, data_loader, device, lat_crop, lon_crop, world_size=4, forecast_length=5):
     """
     Compute the mean loss of all samples in a given dataset.
     
@@ -179,15 +174,34 @@ def get_validation_loss(model, data_loader, device, loss1, loss2, lat_crop, lon_
             Model.
     data_loader : torch.utils.data.Dataloader
                   Dataloader.
-    
+    device : String
+            device (cpu or gpu) that the code is running on #
+    lat_crop : Tuple(int, int)
+            cropping along the latitude dimension of the data required to obtain original dimensions
+            i.e., if the original image has size (721, 1440), and the patch size is (8, 8),
+            the cropping will be (3, 4) for latitude.
+    lon_crop : Tuple(int, int)
+            cropping along the longitude dimension of the data required to obtain original dimensions
+            i.e., if the original image has size (721, 1440), and the patch size is (8, 8),
+            the cropping will be (0, 0) for longitude.
+    world_size : int
+            number of parallel processes, i.e., individual GPUs.
+    forecast_length: int
+            number of auto-regressive forecast steps to be run
+
     Returns
     -------
-    int : The number of correctly predicted samples.
-    int : The overall number of samples in the dataset.
+        mse : Tuple(float)
+                The mean squared errors of hard-coded atmospheric variables
+        acc : Tuple(float)
+                The anomaly correlation coefficient
+        num_samples : int
+                total number of samples
+        time : float
+                time to run validation script
     """
-
-    loss, num_examples = 0, 0
-    rmse = 0
+    loss = 0
+    
     static_plevel = np.load('/hkfs/work/workspace/scratch/ke4365-pangu/PANGU_ERA5_data_v0/static/pressure_zarr.npy')
     mean_plevel   = torch.tensor(static_plevel[0].reshape(1, 5, 13, 1, 1)).to(device)
     std_plevel    = torch.tensor(static_plevel[1].reshape(1, 5, 13, 1, 1)).to(device)
@@ -202,16 +216,16 @@ def get_validation_loss(model, data_loader, device, loss1, loss2, lat_crop, lon_
     climatology_plevel = climatology_plevel - mean_plevel
     climatology_slevel = climatology_slevel - mean_slevel
 
-    Nlat = 721
-    weights = torch.tensor(calc_weight(Nlat, np.linspace(np.pi/2.0, -np.pi/2.0, Nlat))).to(torch.float32).to(device)
-    SE = {
+    n_lat = 721
+    weights = torch.tensor(calc_weight(n_lat, np.linspace(np.pi/2.0, -np.pi/2.0, n_lat))).to(torch.float32).to(device)
+    mse = {
         'T2M':  torch.zeros(forecast_length).to(device),
         'U10':  torch.zeros(forecast_length).to(device),
         'V10':  torch.zeros(forecast_length).to(device),
         'T850': torch.zeros(forecast_length).to(device),
         'Z500': torch.zeros(forecast_length).to(device)
     }
-    ACC = {
+    acc = {
         'T2M':  torch.zeros(forecast_length).to(device),
         'U10':  torch.zeros(forecast_length).to(device),
         'V10':  torch.zeros(forecast_length).to(device),
@@ -238,60 +252,55 @@ def get_validation_loss(model, data_loader, device, loss1, loss2, lat_crop, lon_
             # Call the model and get the output
             output, output_surface = model(input, input_surface)
 
-            SE['T850'][j]  += calc_SE(output, target_, variable='T', pressure_level=850, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
-            SE['Z500'][j]  += calc_SE(output, target_, variable='Z', pressure_level=500, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
-            SE['T2M'][j]   += calc_SE(output_surface, target_surface_, variable='T2M', upper_variable=False, pressure_level=None, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
-            SE['U10'][j]   += calc_SE(output_surface, target_surface_, variable='U10', upper_variable=False, pressure_level=None, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
-            SE['V10'][j]   += calc_SE(output_surface, target_surface_, variable='V10', upper_variable=False, pressure_level=None, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
-            ACC['T850'][j] += calc_ACC(output, target_, variable='T', pressure_level=850, weights=weights, climatology_plevel=climatology_plevel, climatology_slevel=climatology_slevel,   std_plevel=std_plevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
-            ACC['Z500'][j] += calc_ACC(output, target_, variable='Z', pressure_level=500, weights=weights, climatology_plevel=climatology_plevel, climatology_slevel=climatology_slevel,   std_plevel=std_plevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
-            ACC['T2M'][j]  += calc_ACC(output_surface, target_surface_, variable='T2M', upper_variable=False, pressure_level=None, weights=weights, climatology_plevel=climatology_plevel, std_plevel=std_plevel, std_slevel=std_slevel, climatology_slevel=climatology_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
-            ACC['U10'][j]  += calc_ACC(output_surface, target_surface_, variable='U10', upper_variable=False, pressure_level=None, weights=weights, climatology_plevel=climatology_plevel, std_plevel=std_plevel, std_slevel=std_slevel, climatology_slevel=climatology_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
-            ACC['V10'][j]  += calc_ACC(output_surface, target_surface_, variable='V10', upper_variable=False, pressure_level=None, weights=weights, climatology_plevel=climatology_plevel, std_plevel=std_plevel, std_slevel=std_slevel, climatology_slevel=climatology_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+            mse['T850'][j]  += calc_mse(output, target_, variable='T', pressure_level=850, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+            mse['Z500'][j]  += calc_mse(output, target_, variable='Z', pressure_level=500, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+            mse['T2M'][j]   += calc_mse(output_surface, target_surface_, variable='T2M', upper_variable=False, pressure_level=None, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+            mse['U10'][j]   += calc_mse(output_surface, target_surface_, variable='U10', upper_variable=False, pressure_level=None, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+            mse['V10'][j]   += calc_mse(output_surface, target_surface_, variable='V10', upper_variable=False, pressure_level=None, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+            acc['T850'][j] += calc_acc(output, target_, variable='T', pressure_level=850, weights=weights, climatology_plevel=climatology_plevel, climatology_slevel=climatology_slevel,   std_plevel=std_plevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+            acc['Z500'][j] += calc_acc(output, target_, variable='Z', pressure_level=500, weights=weights, climatology_plevel=climatology_plevel, climatology_slevel=climatology_slevel,   std_plevel=std_plevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+            acc['T2M'][j]  += calc_acc(output_surface, target_surface_, variable='T2M', upper_variable=False, pressure_level=None, weights=weights, climatology_plevel=climatology_plevel, std_plevel=std_plevel, std_slevel=std_slevel, climatology_slevel=climatology_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+            acc['U10'][j]  += calc_acc(output_surface, target_surface_, variable='U10', upper_variable=False, pressure_level=None, weights=weights, climatology_plevel=climatology_plevel, std_plevel=std_plevel, std_slevel=std_slevel, climatology_slevel=climatology_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+            acc['V10'][j]  += calc_acc(output_surface, target_surface_, variable='V10', upper_variable=False, pressure_level=None, weights=weights, climatology_plevel=climatology_plevel, std_plevel=std_plevel, std_slevel=std_slevel, climatology_slevel=climatology_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
 
             # autoregressive forecast means output is new input
             input, input_surface = output, output_surface
         total_samples[0] += input.shape[0]
 
     torch.distributed.all_reduce(total_samples)
-    torch.distributed.all_reduce(SE['T850'])
-    torch.distributed.all_reduce(SE['Z500'])
-    torch.distributed.all_reduce(SE['T2M'])
-    torch.distributed.all_reduce(SE['U10'])
-    torch.distributed.all_reduce(SE['V10'])
-    torch.distributed.all_reduce(ACC['T850'])
-    torch.distributed.all_reduce(ACC['Z500'])
-    torch.distributed.all_reduce(ACC['T2M'])
-    torch.distributed.all_reduce(ACC['U10'])
-    torch.distributed.all_reduce(ACC['V10'])
 
+    # Reduce all values on each core to get total SE
+    for variable in ['T850', 'Z500', 'T2M', 'U10', 'V10']:
+        torch.distributed.all_reduce(mse[variable])
+        torch.distributed.all_reduce(acc[variable])
+    
     end_validation_time = time.perf_counter()
 
-
-    total_samples = len(data_loader.dataset) - len(data_loader.dataset) % input.shape[0] # find total number of data points
-    
     total_samples = len(data_loader.dataset) - len(data_loader.dataset) % input.shape[0] # find total number of data points
     loss /= world_size # average the loss for world size
-    # Reduce all values on each core
-    SE['T850'] = torch.sqrt(SE['T850']/total_samples)
-    SE['Z500'] = torch.sqrt(SE['Z500']/total_samples)
-    SE['T2M']  = torch.sqrt(SE['T2M']/total_samples)
-    SE['U10']  = torch.sqrt(SE['U10']/total_samples)
-    SE['V10']  = torch.sqrt(SE['V10']/total_samples)
     
-    ACC['T850'] /= total_samples
-    ACC['Z500'] /= total_samples
-    ACC['T2M'] /= total_samples
-    ACC['U10'] /= total_samples
-    ACC['V10'] /= total_samples
+    # Take square root of MSE
+    for variable in ['T850', 'Z500', 'T2M', 'U10', 'V10']:
+        mse[variable]  = torch.sqrt(mse[variable]/total_samples)
+        acc[variable] = acc[variable] / total_samples
 
-    return  (SE['T850'].tolist(), SE['Z500'].tolist(), SE['T2M'].tolist(), SE['U10'].tolist(), SE['V10'].tolist()), (ACC['T850'].tolist(), ACC['Z500'].tolist(), ACC['T2M'].tolist(), ACC['U10'].tolist(), ACC['V10'].tolist()), total_samples, end_validation_time - start_validation_time
+    return  (mse['T850'].tolist(), mse['Z500'].tolist(), mse['T2M'].tolist(), mse['U10'].tolist(), mse['V10'].tolist()), (acc['T850'].tolist(), acc['Z500'].tolist(), acc['T2M'].tolist(), acc['U10'].tolist(), acc['V10'].tolist()), total_samples, end_validation_time - start_validation_time
 
 
-def calc_weight(Nlat, latitude, cossum=458.36551167):
-    # Nlat = number of total latitude points
-    # latitude = degree of latitude in radians
-    return Nlat * np.cos(latitude) / cossum
+def calc_weight(n_lat, cossum=458.36551167):
+    """
+    Return latitude-weighted values for loss function.
+
+    n_lat: int
+            number of patches in the latitude dimension
+    
+    Returns
+    -------
+    latitude_based weighting factor: np.array(float)
+    """
+    latitude = np.linspace(np.pi/2.0, -np.pi/2.0, n_lat)
+    weight = n_lat * np.cos(latitude) / cossum
+    return weight
 
 # upper_variable options: [Z, Q, T, U, V]
 # surface_variable options: [MSLP, U10, V10, T2M]
@@ -300,26 +309,28 @@ upper_variable_indexing = {'Z': 0, 'Q': 1, 'T': 2, 'U': 3, 'V': 4}
 surface_variable_indexing = {'MSL': 0, 'U10': 1, 'V10': 2, 'T2M': 3}
 PL_indexing = {1000: 0, 925: 1, 850: 2, 700: 3, 600: 4, 500: 5, 400: 6, 300: 7, 250: 8, 200: 9, 150: 10, 100: 11, 50: 12}
 
-def calc_SE(result_values, target_values, variable, pressure_level=500, weights=None, Nlat=721, Nlon=1440, upper_variable=True, mean_plevel=None, std_plevel=None, mean_slevel=None, std_slevel=None, lat_crop=(3,4), lon_crop=(0,0)):
+def calc_mse(result_values, target_values, variable, pressure_level=500, weights=None, n_lat=721, n_lon=1440, upper_variable=True, mean_plevel=None, std_plevel=None, mean_slevel=None, std_slevel=None, lat_crop=(3,4), lon_crop=(0,0)):
+    """Calculate the non-normalized MSE with helper function."""
     divisor = torch.sqrt(torch.tensor([1440.0*721])).to(result_values.device)
-    # results_values shape: [batch_size, 5 variables, 14 pressure levels, Nlat, Nlon]
+    # results_values shape: [batch_size, 5 variables, 14 pressure levels, n_lat, n_lon]
     if upper_variable:
-        L2 = ((target_values[:, upper_variable_indexing[variable], PL_indexing[pressure_level], lat_crop[0]:-lat_crop[1] or None, lon_crop[0]:-lon_crop[1] or None] - 
+        mean_squared_error = ((target_values[:, upper_variable_indexing[variable], PL_indexing[pressure_level], lat_crop[0]:-lat_crop[1] or None, lon_crop[0]:-lon_crop[1] or None] - 
               result_values[:, upper_variable_indexing[variable], PL_indexing[pressure_level], lat_crop[0]:-lat_crop[1] or None, lon_crop[0]:-lon_crop[1] or None]) * 
               std_plevel[0,upper_variable_indexing[variable], PL_indexing[pressure_level]].flatten() / divisor
               )**2
     else:
-        L2 = ((target_values[:, surface_variable_indexing[variable], lat_crop[0]:-lat_crop[1] or None, lon_crop[0]:-lon_crop[1] or None] - 
+        mean_squared_error = ((target_values[:, surface_variable_indexing[variable], lat_crop[0]:-lat_crop[1] or None, lon_crop[0]:-lon_crop[1] or None] - 
               result_values[:, surface_variable_indexing[variable], lat_crop[0]:-lat_crop[1] or None, lon_crop[0]:-lon_crop[1] or None]) * 
               std_slevel[0, surface_variable_indexing[variable]].flatten() / divisor
               )**2
-    SE = torch.einsum('i, aij->ai', weights, L2).sum(dim=1)
-    SE = SE.flatten().sum() 
+    mean_squared_error = torch.einsum('i, aij->ai', weights, mean_squared_error).sum(dim=1)
+    mean_squared_error = mean_squared_error.flatten().sum() 
     
-    return SE.item()
+    return mean_squared_error.item()
 
-def calc_ACC(result_values, target_values, variable, pressure_level, weights=None, Nlat=721, Nlon=1440, upper_variable=True, climatology_plevel=None, climatology_slevel=None, std_plevel=None, std_slevel=None, lat_crop=(3,4), lon_crop=(0,0)):
-    # results_values shape: [batch_size, 5 variables, 14 pressure levels, Nlat, Nlon]
+def calc_acc(result_values, target_values, variable, pressure_level, weights=None, n_lat=721, n_lon=1440, upper_variable=True, climatology_plevel=None, climatology_slevel=None, std_plevel=None, std_slevel=None, lat_crop=(3,4), lon_crop=(0,0)):
+    """Calculate ACC with helper function."""
+    # results_values shape: [batch_size, 5 variables, 14 pressure levels, n_lat, n_lon]
     if upper_variable:
         target_anomoly = (target_values[:, upper_variable_indexing[variable], PL_indexing[pressure_level], lat_crop[0]:-lat_crop[1] or None, lon_crop[0]:-lon_crop[1] or None] *
                           std_plevel[0, upper_variable_indexing[variable], PL_indexing[pressure_level]].flatten() - 

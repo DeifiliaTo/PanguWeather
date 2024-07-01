@@ -1,7 +1,7 @@
+import glob
+
 import h5py
 import numpy as np
-import os
-import glob
 
 # List of h5py files
 file_list_plevel  = glob.glob('/hkfs/work/workspace/scratch/ke4365-pangu/PANGU_ERA5_data_v0/train/????.h5') 

@@ -1,9 +1,11 @@
-from networks import pangu
 import sys
-import torch
-from utils import data_loader_multifiles
+
 import matplotlib.pyplot as plt
 import numpy as np
+import torch
+
+from networks import pangu
+from utils import data_loader_multifiles
 
 model_path = '/hkfs/work/workspace/scratch/ke4365-pangu/pangu-weather/trained_models/pangum1.pt'
 results_directory = '/hkfs/work/workspace/scratch/ke4365-pangu/pangu-weather/results/'

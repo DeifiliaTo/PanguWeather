@@ -1,17 +1,11 @@
 # Write pressure level data to hdf5 data
 
-import pandas as pd
-from netCDF4 import Dataset as DS
-import numpy as np
-import torch
-import glob
-import logging
-import h5py
 import argparse
 import os
 import time
- 
-from torch.utils.data import DataLoader, Dataset
+
+import h5py
+from netCDF4 import Dataset as DS
 
 
 def writetofile(src, dest, channel_idx, varslist, src_idx=0, frmt='nc'):

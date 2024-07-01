@@ -1,25 +1,29 @@
+import sys
+
 import torch
 
-import sys
 # caution: path[0] is reserved for script path (or '' in REPL)
 sys.path.insert(1, '/home/hk-project-epais/ke4365/pangu-weather')
+import datetime
+import json
+import os
+import time
+
+import numpy as np
+import torch.distributed as dist
+from torch.cuda.amp import GradScaler
+from torch.nn.parallel import DistributedDataParallel as DDP
+
+import utils.eval as eval
+from networks.noBias import PanguModel as NoBiasModel
 from networks.pangu import PanguModel as PanguModel
 from networks.PanguLite import PanguModel as PanguModelLite
-from networks.relativeBias import PanguModel as RelativeBiasModel
-from networks.noBias import PanguModel as NoBiasModel
-from networks.Three_layers import PanguModel as ThreeLayerModel
 from networks.PanguLite2DAttention import PanguModel as PanguLite2D
 from networks.PositionalEmbedding import PanguModel as PositionalEmbedding
+from networks.relativeBias import PanguModel as RelativeBiasModel
+from networks.Three_layers import PanguModel as ThreeLayerModel
 from utils.data_loader_multifiles import get_data_loader
-import torch
-from torch.cuda.amp import autocast, GradScaler
-import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP
-import os
-import utils.eval as eval
-import time, datetime, json
-import gc
-import numpy as np
+
 
 def init_distributed(params):
     rank = int(os.getenv("SLURM_PROCID"))       # Get individual process ID.
@@ -92,9 +96,7 @@ def training_loop(params, device, slurm_localid, gpus_per_node):
         )
     
     optimizer = torch.optim.Adam(model.parameters(), lr=5e-4, weight_decay=3e-6)
-
-    start = time.perf_counter() # Measure training time.
-
+    
     if dist.is_initialized():
         rank = dist.get_rank()
         world_size = dist.get_world_size()
@@ -128,8 +130,6 @@ def training_loop(params, device, slurm_localid, gpus_per_node):
         save_counter = 0
 
     # Z, Q, T, U, V
-    rng = np.random.default_rng(seed=42)
-    
     total_weights = np.zeros((num_epochs, 4))
     n_cycles = 2
     interval = 2*np.pi*n_cycles
@@ -208,7 +208,7 @@ def training_loop(params, device, slurm_localid, gpus_per_node):
         model.eval()
         with torch.no_grad():
             # Get rank-local numbers of correctly classified and overall samples in training and validation set.
-            val_loss, MSE, acc, total_samples, dt_validation = eval.get_loss(model, valid_data_loader, device, loss1, loss2, lat_crop=params['lat_crop'], lon_crop=params['lon_crop'], world_size=world_size)
+            val_loss, mean_square_error, acc, total_samples, dt_validation = eval.get_loss(model, valid_data_loader, device, loss1, loss2, lat_crop=params['lat_crop'], lon_crop=params['lon_crop'], world_size=world_size)
 
             if rank == 0:
                 valid_loss_history.append(val_loss[0])
@@ -232,15 +232,15 @@ def training_loop(params, device, slurm_localid, gpus_per_node):
                 print(f'Epoch Average: {int(epoch)+1:03d}/{int(num_epochs):03d} ')
                 print(f'| Mean L1 Training Loss: {epoch_average_loss :.5f} ')
                 print(f'| Mean L1 Validation Loss: {val_loss[0] :.5f} ')
-                print(f'| MSE T850: {MSE[0][0] :.3f} ')
-                print(f'| MSE Z500: {MSE[1][0] :.3f} ')
-                print(f'| MSE U850: {MSE[2][0] :.3f} ')
-                print(f'| MSE V850: {MSE[3][0] :.3f} ')
-                print(f'| MSE Q850: {MSE[4][0]*1000 :.3f} ')
-                print(f'| MSE T2M:  {MSE[5][0] :.3f} ')
-                print(f'| MSE U10:  {MSE[6][0] :.3f} ')
-                print(f'| MSE V10:  {MSE[7][0] :.3f} ')
-                print(f'| MSE MSL:  {MSE[8][0] :.3f} ')
+                print(f'| MSE T850: {mean_square_error[0][0] :.3f} ')
+                print(f'| MSE Z500: {mean_square_error[1][0] :.3f} ')
+                print(f'| MSE U850: {mean_square_error[2][0] :.3f} ')
+                print(f'| MSE V850: {mean_square_error[3][0] :.3f} ')
+                print(f'| MSE Q850: {mean_square_error[4][0]*1000 :.3f} ')
+                print(f'| MSE T2M:  {mean_square_error[5][0] :.3f} ')
+                print(f'| MSE U10:  {mean_square_error[6][0] :.3f} ')
+                print(f'| MSE V10:  {mean_square_error[7][0] :.3f} ')
+                print(f'| MSE MSL:  {mean_square_error[8][0] :.3f} ')
                 print(f'| ACC T850: {acc[0][0] :.3f} ')
                 print(f'| ACC Z500: {acc[1][0] :.3f} ')
                 print(f'| ACC U850: {acc[2][0] :.3f} ')
@@ -337,7 +337,7 @@ if __name__ == '__main__':
         if not params['restart']:
             try:
                 os.mkdir(params['save_dir'])
-            except:
+            except ValueError:
                 raise ValueError("Could not create directory")
     
             # dump parameters into json directory
@@ -345,7 +345,7 @@ if __name__ == '__main__':
                 json.dump(params, params_file)
         
     # initialize patch size: currently, patch size is only (2, 8, 8) for PanguLite. PS is (2, 4, 4) for all other sizes.
-    if params['Lite'] == True:
+    if params['Lite']:
         params['patch_size'] = (2, 8, 8)
         if params['model'] == '2D' or params['model'] == '2Dim192':
             params['batch_size'] = 12

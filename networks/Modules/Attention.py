@@ -1,42 +1,105 @@
 import torch
 import torch.nn as nn
-from torch.nn import Linear, LayerNorm, Dropout, LayerNorm, Softmax, Parameter
-from torch import reshape, arange, zeros, meshgrid, stack, flatten, permute, sum
-from torch.nn.functional import pad
-
-from timm.layers import DropPath, trunc_normal_
 from Modules.MLP import MLP
-import gc
+from timm.layers import DropPath, trunc_normal_
+from torch import arange, flatten, meshgrid, permute, reshape, stack, sum, zeros
+from torch.nn import Dropout, LayerNorm, Linear, Parameter, Softmax
+from torch.nn.functional import pad
 from torch.utils.checkpoint import checkpoint
 
+
 class EarthSpecificLayerBase(nn.Module):
+  """Base class for defining a series of attention blocks."""
+
   def __init__(self, depth, dim):
+    """
+    Initialize the EarthSpecificLayer.
+
+    depth: int
+        Number of identical sequential layers
+    dim: int
+        Hidden dimension of the attention mechanism.  
+    """
     super().__init__()
     self.depth = depth
     self.dim = dim
     
-  def forward(self, x, Z, H, W):
+  def forward(self, x, n_patch_vert, n_patch_lat, n_patch_lon):
+    """
+    Forward pass of the EarthSpecificLayer. The input is rolled every other layer. Checkpoint activation is used to reduce memory requirements.
+
+    x: Tensor
+      Input of shape (B, n_patch_vert, n_patch_lat, n_patch_lon, n_variables) #TODO: correct?
+    n_patch_vert: int
+      Number of patches in the vertical (first) dimension
+    n_patch_lat: int
+      Number of patches in the latitude (second) dimension
+    n_patch_lon: int
+      Number of patches in the longitude (third) dimension
+
+    Returns
+    -------
+    x: Tensor
+    """
     for i in range(self.depth):
       # Roll the input every two blocks
       if i % 2 == 0:
-        x = checkpoint(self.blocks[i], x, Z, H, W, False, use_reentrant=False)
+        x = checkpoint(self.blocks[i], x, n_patch_vert, n_patch_lat, n_patch_lon, False, use_reentrant=False)
         torch.cuda.empty_cache()
       else:
-        x = checkpoint(self.blocks[i], x, Z, H, W, True, use_reentrant=False)
+        x = checkpoint(self.blocks[i], x, n_patch_vert, n_patch_lat, n_patch_lon, True, use_reentrant=False)
         torch.cuda.empty_cache()
     return x
   
 class EarthSpecificLayerAbsolute(EarthSpecificLayerBase):
+  """Earth-Specific Layer for absolute positional bias term within attention mechanism."""
+
   def __init__(self, depth, dim, drop_path_ratio_list, heads, input_shape, device, input_resolution, window_size=torch.tensor([2, 6, 12])):
-    '''Basic layer of our network, contains 2 or 6 blocks'''
+    """
+    Initialize layer of network that calls EarthSpecificBlockAbsolute.
+    
+    depth: int
+        Number of layers
+    dim: int
+        Size of hidden dimension
+    drop_path_ratio_list: List[float]
+        List of length = layers specifying drop_path_ratio for each layer.
+    device: String
+        device that the code is being run on.
+    input_resolution: List[int]
+        List of length 3 that specifies the dimensions after the patch embedding step incl. padding.
+        For Pangu-Weather, input resolution is (8, 186, 360)
+        For Pangu-Weather-Lite, input resolution is (8, 93, 180)
+    window_size: Tensor
+        Tensor of length(3) describing the window size in (vert, lat, long) dimensions to be used in the attention mechanism.
+    """
     super().__init__(depth, dim)
     
     # Construct basic blocks
     self.blocks = nn.ModuleList([EarthSpecificBlockAbsolute(dim, drop_path_ratio_list[i], heads, input_shape=input_shape,device=device, input_resolution=input_resolution, window_size=window_size).to(device) for i in torch.arange(depth)])    
     
 class EarthSpecificLayerRelative(EarthSpecificLayerBase):
+  """Earth-Specific Layer for absolute positional bias term within attention mechanism."""
+
   def __init__(self, depth, dim, drop_path_ratio_list, heads, input_shape, device, input_resolution, window_size=torch.tensor([2, 6, 12])):
-    '''Basic layer of our network, contains 2 or 6 blocks'''
+    """
+    Initialize layer of network that calls EarthSpecificBlockRelative.
+    
+    depth: int
+        Number of layers
+    dim: int
+        Size of hidden dimension
+    drop_path_ratio_list: List[float]
+        List of length = layers specifying drop_path_ratio for each layer.
+    device: String
+        device that the code is being run on.
+    input_resolution: List[int]
+        List of length 3 that specifies the dimensions after the patch embedding step incl. padding.
+        For Pangu-Weather, input resolution is (8, 186, 360)
+        For Pangu-Weather-Lite, input resolution is (8, 93, 180)
+    window_size: Tensor
+        Tensor of length(3) describing the window size in (vert, lat, long) dimensions to be used in the attention mechanism.
+    """
     super().__init__(depth, dim)
     
     # Construct basic blocks
@@ -44,54 +107,155 @@ class EarthSpecificLayerRelative(EarthSpecificLayerBase):
     
     
 class EarthSpecificLayerNoBias(EarthSpecificLayerBase):
+  """Earth-Specific Layer for attention mechanism with no bias term."""
+
   def __init__(self, depth, dim, drop_path_ratio_list, heads, input_shape, device, input_resolution, window_size=torch.tensor([2, 6, 12])):
-    '''Basic layer of our network, contains 2 or 6 blocks'''
+    """
+    Initialize layer of network that calls EarthSpecificBlockNoBias.
+
+    depth: int
+        Number of layers
+    dim: int
+        Size of hidden dimension
+    drop_path_ratio_list: List[float]
+        List of length = layers specifying drop_path_ratio for each layer.
+    device: String
+        device that the code is being run on.
+    input_resolution: List[int]
+        List of length 3 that specifies the dimensions after the patch embedding step incl. padding.
+        For Pangu-Weather, input resolution is (8, 186, 360)
+        For Pangu-Weather-Lite, input resolution is (8, 93, 180)
+    window_size: Tensor
+        Tensor of length(3) describing the window size in (vert, lat, long) dimensions to be used in the attention mechanism.
+    """
     super().__init__(depth, dim)
     
     # Construct basic blocks
     self.blocks = nn.ModuleList([EarthSpecificBlockNoBias(dim, drop_path_ratio_list[i], heads, input_shape=input_shape,device=device, input_resolution=input_resolution, window_size=window_size).to(device) for i in torch.arange(depth)])    
 
 class EarthSpecificLayer2D(EarthSpecificLayerBase):
+  """Earth-Specific Layer for 2D attention mechanism with absolute positional bais term within attention mechanism."""
+
   def __init__(self, depth, dim, drop_path_ratio_list, heads, input_shape, device, input_resolution, window_size=torch.tensor([6, 12])):
-    '''Basic layer of our network, contains 2 or 6 blocks'''
+    """
+    Initialize layer of network that calls EarthSpecificBlock2D.
+    
+    depth: int
+        Number of layers
+    dim: int
+        Size of hidden dimension
+    drop_path_ratio_list: List[float]
+        List of length = layers specifying drop_path_ratio for each layer.
+    device: String
+        device that the code is being run on.
+    input_resolution: List[int]
+        List of length 3 that specifies the dimensions after the patch embedding step incl. padding.
+        For Pangu-Weather, input resolution is (8, 186, 360)
+        For Pangu-Weather-Lite, input resolution is (8, 93, 180)
+    window_size: Tensor
+        Tensor of length(3) describing the window size in (vert, lat, long) dimensions to be used in the attention mechanism.
+    """
     super().__init__(depth, dim)
     
     # Construct basic blocks
     self.blocks = nn.ModuleList([EarthSpecificBlock2D(dim, drop_path_ratio_list[i], heads, input_shape=input_shape,device=device, input_resolution=input_resolution, window_size=window_size).to(device) for i in torch.arange(depth)])    
     
-  def forward(self, x, H, W):
+  def forward(self, x, n_patch_lat, n_patch_lon):
+    """
+    Forward pass of Earth-Specific layers for 2D attention mechanism with absolute positional bias term.
+    
+    x: Tensor
+        Input to model of shape (B, n_patch_lat, n_patch_lon, n_variables*n_patch_vert) #TODO correct?
+    n_patch_lat: int
+        Number of patches in the latitude dimension.
+    n_patch_lon: int
+        Number of patches in the longitude dimension.
+
+    Returns
+    -------
+    x: Tensor
+    """
     for i in range(self.depth):
       # Roll the input every two blocks
       if i % 2 == 0:
-        x = checkpoint(self.blocks[i], x, H, W, False, use_reentrant=False)
+        x = checkpoint(self.blocks[i], x, n_patch_lat, n_patch_lon, False, use_reentrant=False)
         torch.cuda.empty_cache()
       else:
-        x = checkpoint(self.blocks[i], x, H, W, True, use_reentrant=False)
+        x = checkpoint(self.blocks[i], x, n_patch_lat, n_patch_lon, True, use_reentrant=False)
         torch.cuda.empty_cache()
     return x
   
 class EarthSpecificLayer2DNoBias(EarthSpecificLayerBase):
+  """Earth-Specific Layer for 2D attention mechanism without bias term."""
+
   def __init__(self, depth, dim, drop_path_ratio_list, heads, input_shape, device, input_resolution, window_size=torch.tensor([6, 12])):
-    '''Basic layer of our network, contains 2 or 6 blocks'''
+    """
+    Initialize layer of network that calls EarthSpecificBlock2DNoBias.
+
+    depth: int
+        Number of layers
+    dim: int
+        Size of hidden dimension
+    drop_path_ratio_list: List[float]
+        List of length = layers specifying drop_path_ratio for each layer.
+    device: String
+        device that the code is being run on.
+    input_resolution: List[int]
+        List of length 3 that specifies the dimensions after the patch embedding step incl. padding.
+        For Pangu-Weather, input resolution is (8, 186, 360)
+        For Pangu-Weather-Lite, input resolution is (8, 93, 180)
+    window_size: Tensor
+        Tensor of length(3) describing the window size in (vert, lat, long) dimensions to be used in the attention mechanism.
+    """
     super().__init__(depth, dim)
     
     # Construct basic blocks
     self.blocks = nn.ModuleList([EarthSpecificBlock2DNoBias(dim, drop_path_ratio_list[i], heads, input_shape=input_shape,device=device, input_resolution=input_resolution, window_size=window_size).to(device) for i in torch.arange(depth)])    
     
-  def forward(self, x, H, W):
+  def forward(self, x, n_patch_lat, n_patch_lon):
+    """
+    Forward pass of Earth-Specific layers for 2D attention mechanism with absolute positional bias term.
+    
+    x: Tensor
+        Input to model of shape (B, n_patch_lat, n_patch_lon, n_variables*n_patch_vert) #TODO correct?
+    n_patch_lat: int
+        Number of patches in the latitude dimension.
+    n_patch_lon: int
+        Number of patches in the longitude dimension.
+
+    Returns
+    -------
+    x: Tensor
+    """
     for i in range(self.depth):
       # Roll the input every two blocks
       if i % 2 == 0:
-        x = checkpoint(self.blocks[i], x, H, W, False, use_reentrant=False)
+        x = checkpoint(self.blocks[i], x, n_patch_lat, n_patch_lon, False, use_reentrant=False)
         torch.cuda.empty_cache()
       else:
-        x = checkpoint(self.blocks[i], x, H, W, True, use_reentrant=False)
+        x = checkpoint(self.blocks[i], x, n_patch_lat, n_patch_lon, True, use_reentrant=False)
         torch.cuda.empty_cache()
     return x
   
 # Provides base for EarthSpecificBlock
 class EarthSpecificBlockBase(nn.Module):
+  """Base class for one block of the attention mechanism."""
+
   def __init__(self, dim, drop_path_ratio, input_resolution, window_size):
+    """
+    Initialize attention block.
+
+    dim: int
+        Size of hidden dimension
+    drop_path_ratio: float
+        Probability that sample will be dropped.
+    input_resolution: List[int]
+        List of length 3 that specifies the dimensions after the patch embedding step incl. padding.
+        For Pangu-Weather, input resolution is (8, 186, 360)
+        For Pangu-Weather-Lite, input resolution is (8, 93, 180)
+    window_size: Tensor
+        Tensor of length(3) describing the window size in (vert, lat, long) dimensions to be used in the attention mechanism.
+    """
     super().__init__()
     # Define the window size of the neural network 
     self.window_size = window_size
@@ -103,13 +267,24 @@ class EarthSpecificBlockBase(nn.Module):
     self.linear = MLP(dim, 0)
     self.input_resolution = input_resolution
     
-    # Only generate masks one time @ initialization
-    #self.attn_mask = self._gen_mask_(Z=input_resolution[0], H=input_resolution[1], W=input_resolution[2]).to(torch.float32)
-    #self.zero_mask = torch.zeros(self.attn_mask.shape).to(torch.float32)
-
   # Windows that wrap around w dimension do not get masked
-  def _gen_mask_(self, Z, H, W):
-    img_mask = torch.zeros((1, Z, H, W, 1))  # 1 Z H W 1
+  def _gen_mask_(self, n_patch_vert, n_patch_lat, n_patch_lon):
+    """
+    Generate mask for attention mechanism when fields are rolled. 
+
+    n_patch_vert: int
+        Number of patches in the vertical (first) dimension
+    n_patch_lat: int
+        Number of patches in the latitude (second) dimension
+    n_patch_lon: int
+        Number of patches in the longitude (third) dimension
+
+    Returns
+    -------
+    attention_mask: Tensor #TODO: shape
+        attention mask with value of 0 when attention should not be masked and -10000 when masked.
+    """
+    img_mask = torch.zeros((1, n_patch_vert, n_patch_lat, n_patch_lon, 1))  # 1 n_patch_vert n_patch_lat n_patch_lon 1
     z_slices = (slice(0, -self.window_size[0]),
                 slice(-self.window_size[0], -self.window_size[0]//2),
                 slice(-self.window_size[0]//2, None))
@@ -123,51 +298,81 @@ class EarthSpecificBlockBase(nn.Module):
           img_mask[:, z, h, :, :] = cnt
           cnt += 1
 
-    mask_windows = self._window_partition(img_mask, self.window_size)  # nW, window_size, window_size, 1
+    mask_windows = self._window_partition(img_mask, self.window_size)  # n_windows, window_size, window_size, 1
     mask_windows = mask_windows.view(-1, self.window_size[0] * self.window_size[1]* self.window_size[2])
-    attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
-    attn_mask = attn_mask.masked_fill(attn_mask != 0, float(-10000.0)).masked_fill(attn_mask == 0, float(0.0))
-    return attn_mask
+    attention_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
+    attention_mask = attention_mask.masked_fill(attention_mask != 0, float(-10000.0)).masked_fill(attention_mask == 0, float(0.0))
+    return attention_mask
   
   def _window_partition(self, x, window_size):
     """
-    Args:
-        x: (B, Z, H, W, C)
-        window_size (int): window size
-
-    Returns:
-        windows: (num_windows*B, window_size[0], window_size[1], window_size[2], C)
-    """
+    Partitions input tensor into windows over which attention will be calculated.
     
-    B, Z, H, W, C = x.shape
-    x = x.view(B, Z // window_size[0], window_size[0], H // window_size[1], window_size[1], W // window_size[2], window_size[2], C)
-    windows = x.permute(0, 1, 3, 5, 2, 4, 6, 7).contiguous().view(-1, window_size[0], window_size[1], window_size[2], C)
+    x: Tensor
+        of shape (n_batch, n_patch_vert, n_patch_lat, n_patch_lon, C)
+    window_size: Tensor
+        of length 3, describing window size in (vert, lat, lon) dimensions
+        = (window_size_vert, window_size_lat, window_size_lon)
+
+    Returns
+    -------
+    windows: Tensor
+        of shape(num_windows*n_batch, window_size_vert, window_size_lat, window_size_lon, C)
+    """
+    n_batch, n_patch_vert, n_patch_lat, n_patch_lon, hidden_dim = x.shape
+    x = x.view(n_batch, n_patch_vert // window_size[0], window_size[0], n_patch_lat // window_size[1], window_size[1], n_patch_lon // window_size[2], window_size[2], hidden_dim)
+    windows = x.permute(0, 1, 3, 5, 2, 4, 6, 7).contiguous().view(-1, window_size[0], window_size[1], window_size[2], hidden_dim)
     return windows
 
-  def _window_reverse(self, windows, window_size, Z, H, W):
+  def _window_reverse(self, windows, window_size, n_patch_vert, n_patch_lat, n_patch_lon):
       """
-      Args:
-          windows: (num_windows*B, window_size[0], window_size[1], window_size[2], C) == nB,W0,W2,W1,C
-          window_size (int): Window size
-          Z (int): Number of pressure heights
-          H (int): Height of image
-          W (int): Width of image
+      Reverse window operation to retrieve x Tensor in original shape.
 
-      Returns:
-          x: (B, Z, H, W, C)
+      windows: Tensor
+          of shape (num_windows*n_batch, window_size_vert, window_size_lat, window_size_lon, C) == nB,W0,W1,C
+      window_size: Tensor
+        of length 3, describing window size in (vert, lat, lon) dimensions
+
+      n_patch_vert: int
+        Number of patches in the vertical (first) dimension
+      n_patch_lat: int
+          Number of patches in the latitude (second) dimension
+      n_patch_lon: int
+          Number of patches in the longitude (third) dimension
+
+      Returns
+      -------
+      x: Tensor
+          of shape (n_batch, n_patch_vert, n_patch_lat, n_patch_lon, C)
       """
-
-      B = int(windows.shape[0] / (Z * H * W) * (window_size[0] * window_size[1] * window_size[2]))
-      x = windows.view(B, Z // window_size[0], H // window_size[1], W // window_size[2], window_size[0], window_size[1], window_size[2], -1)
+      n_batch = int(windows.shape[0] / (n_patch_vert * n_patch_lat * n_patch_lon) * (window_size[0] * window_size[1] * window_size[2]))
+      x = windows.view(n_batch, n_patch_vert // window_size[0], n_patch_lat // window_size[1], n_patch_lon // window_size[2], window_size[0], window_size[1], window_size[2], -1)
       x = x.permute(0, 1, 4, 2, 5, 3, 6, 7)
       return x
   
-  def forward(self, x, Z, H, W, roll):
+  def forward(self, x, n_patch_vert, n_patch_lat, n_patch_lon, roll):
+    """
+    Forward pass of a single attention block.
+
+    n_patch_vert: int
+        Number of patches in the vertical (first) dimension
+    n_patch_lat: int
+        Number of patches in the latitude (second) dimension
+    n_patch_lon: int
+        Number of patches in the longitude (third) dimension
+    roll: bool
+        Specifying if the layer is rolled
+    
+    Returns
+    -------
+    x: Tensor
+        of shape (B, n_patch_vert*n_patch_lat*n_patch_lon, C)
+    """
     # Save the shortcut for skip-connection
     shortcut = x.clone()     
 
     # Reshape input to three dimensions to calculate window attention
-    x = reshape(x, shape=(x.shape[0], Z, H, W, x.shape[2]))
+    x = reshape(x, shape=(x.shape[0], n_patch_vert, n_patch_lat, n_patch_lon, x.shape[2]))
     
     # Zero-pad input accordign to window sizes
     x1_pad    = (self.window_size[0] - (x.shape[1] % self.window_size[0])) % self.window_size[0] // 2
@@ -190,33 +395,33 @@ class EarthSpecificBlockBase(nn.Module):
     # If two pixels are not adjacent, then mask the attention between them
     # Your can set the matrix element to -1000 when it is not adjacent, then add it to the attention
     # Reorganize data to calculate window attention 
-    x_window = self._window_partition(x, self.window_size) # nW * B, window_size[0], window_size[1], window_size[2], C
+    x_window = self._window_partition(x, self.window_size) # n_windows * B, window_size[0], window_size[1], window_size[2], C
     
     # Get data stacked in 3D cubes, which will further be used to calculated attention among each cube                   
-    x_window = x_window.view(-1, self.window_size[0]*self.window_size[1]*self.window_size[2], x_window.shape[-1])# nW * B, window_size[0], window_size[1], window_size[2], C
+    x_window = x_window.view(-1, self.window_size[0]*self.window_size[1]*self.window_size[2], x_window.shape[-1])# n_windows * B, window_size[0], window_size[1], window_size[2], C
     
     # Apply 3D window attention with Earth-Specific bias
     
-    mask = self._gen_mask_(Z=ori_shape[1], H=ori_shape[2], W=ori_shape[3]).to(torch.float32)  
+    mask = self._gen_mask_(n_patch_vert=ori_shape[1], n_patch_lat=ori_shape[2], n_patch_lon=ori_shape[3]).to(torch.float32)  
     
     if roll:
-      attn_windows  = self.attention(x_window, mask)
+      attention_windows  = self.attention(x_window, mask)
     else:
       zero_mask = torch.zeros(mask.shape).to(torch.float32)
-      attn_windows  = self.attention(x_window, zero_mask)
+      attention_windows  = self.attention(x_window, zero_mask)
 
-    attn_windows = attn_windows.view(-1, self.window_size[0], self.window_size[1], self.window_size[2], x.shape[-1])
+    attention_windows = attention_windows.view(-1, self.window_size[0], self.window_size[1], self.window_size[2], x.shape[-1])
 
-    x = self._window_reverse(attn_windows, self.window_size, Z=x.shape[1], H=x.shape[2], W=x.shape[3])
+    x = self._window_reverse(attention_windows, self.window_size, n_patch_vert=x.shape[1], n_patch_lat=x.shape[2], n_patch_lon=x.shape[3])
     # Reshape the tensor back to its original shape
-    x = reshape(x, shape=ori_shape) # B, Z, H, W, C 
+    x = reshape(x, shape=ori_shape) # B, n_patch_vert, n_patch_lat, n_patch_lon, C 
 
     if roll:
       # Roll x back for half of the window
       x = torch.roll(x, shifts=(-self.window_size[0]//2, -self.window_size[1]//2, -self.window_size[2]//2), dims=(1, 2, 3))
 
     # Crop the zero padding
-    x = x[:, x1_pad:x1_pad+Z, y1_pad:y1_pad+H, z1_pad:z1_pad+W, :]
+    x = x[:, x1_pad:x1_pad+n_patch_vert, y1_pad:y1_pad+n_patch_lat, z1_pad:z1_pad+n_patch_lon, :]
     
     # Reshape the tensor back to the input shape
     x = reshape(x, shape=(x.shape[0], x.shape[1]*x.shape[2]*x.shape[3], x.shape[4]))
@@ -227,49 +432,116 @@ class EarthSpecificBlockBase(nn.Module):
 
     return x
     
-# 3D, absolute
 class EarthSpecificBlockAbsolute(EarthSpecificBlockBase):
+  """Class for one block of the 3D attention mechanism with absolute positional bias term and window attention."""
+
   def __init__(self, dim, drop_path_ratio, heads, input_shape, device, input_resolution, window_size):
-    '''
-    3D transformer block with Earth-Specific bias and window attention, 
-    see https://github.com/microsoft/Swin-Transformer for the official implementation of 2D window attention.
-    The major difference is that we expand the dimensions to 3 and replace the relative position bias with Earth-Specific bias.
-    '''
+    """
+    Initialize 3D Transformer block with absolute positional bias term.
+    
+    dim: int
+        Size of hidden dimension
+    drop_path_ratio: float
+        Probability that a sample will be dropped during training
+    heads: int
+        Number of attention heads
+    input_shape: torch.Shape
+        of shape 2 describing the number of patches in the (lat, lon) dimensions 
+    device: String
+        device that the code is being run on.
+    input_resolution: List[int]
+        List of length 3 that specifies the dimensions after the patch embedding step incl. padding.
+        For Pangu-Weather, input resolution is (8, 186, 360)
+        For Pangu-Weather-Lite, input resolution is (8, 93, 180)
+    window_size: Tensor
+        Tensor of length(3) describing the window size in (vert, lat, long) dimensions to be used in the attention mechanism.
+    """
     super().__init__(dim, drop_path_ratio, input_resolution, window_size)
     
     self.attention = EarthAttention3DAbsolute(dim, heads, 0, self.window_size, input_shape)
 
 # 3D, Relative
 class EarthSpecificBlockRelative(EarthSpecificBlockBase):
+  """Class for one block of the 3D attention mechanism with relative positional bias term and window attention."""
+
   def __init__(self, dim, drop_path_ratio, heads, input_shape, device, input_resolution, window_size):
-    '''
-    3D transformer block with Earth-Specific bias and window attention, 
-    see https://github.com/microsoft/Swin-Transformer for the official implementation of 2D window attention.
-    The major difference is that we expand the dimensions to 3 and replace the relative position bias with Earth-Specific bias.
-    '''
+    """
+    Initialize 3D Transformer block with relative positional bias term.
+    
+    dim: int
+        Size of hidden dimension
+    drop_path_ratio: float
+        Probability that a sample will be dropped during training
+    heads: int
+        Number of attention heads
+    input_shape: torch.Shape
+        of shape 2 describing the number of patches in the (lat, lon) dimensions 
+    device: String
+        device that the code is being run on.
+    input_resolution: List[int]
+        List of length 3 that specifies the dimensions after the patch embedding step incl. padding.
+        For Pangu-Weather, input resolution is (8, 186, 360)
+        For Pangu-Weather-Lite, input resolution is (8, 93, 180)
+    window_size: Tensor
+        Tensor of length(3) describing the window size in (vert, lat, long) dimensions to be used in the attention mechanism.
+    """
     super().__init__(dim, drop_path_ratio, input_resolution, window_size)
     
     self.attention = EarthAttention3DRelative(dim, heads, 0, self.window_size, input_shape, device)
    
 class EarthSpecificBlockNoBias(EarthSpecificBlockBase):
+  """Class for one block of the 3D attention mechanism with no positional bias term and window attention."""
+
   def __init__(self, dim, drop_path_ratio, heads, input_shape, device, input_resolution, window_size):
-    '''
-    3D transformer block with Earth-Specific bias and window attention, 
-    see https://github.com/microsoft/Swin-Transformer for the official implementation of 2D window attention.
-    The major difference is that we expand the dimensions to 3 and replace the relative position bias with Earth-Specific bias.
-    '''
+    """
+    Initialize 3D Transformer block with no bias term.
+    
+    dim: int
+        Size of hidden dimension
+    drop_path_ratio: float
+        Probability that a sample will be dropped during training
+    heads: int
+        Number of attention heads
+    input_shape: torch.Shape
+        of shape 2 describing the number of patches in the (lat, lon) dimensions 
+    device: String
+        device that the code is being run on.
+    input_resolution: List[int]
+        List of length 3 that specifies the dimensions after the patch embedding step incl. padding.
+        For Pangu-Weather, input resolution is (8, 186, 360)
+        For Pangu-Weather-Lite, input resolution is (8, 93, 180)
+    window_size: Tensor
+        Tensor of length(3) describing the window size in (vert, lat, long) dimensions to be used in the attention mechanism.
+    """
     super().__init__(dim, drop_path_ratio, input_resolution, window_size)
     
     self.attention = EarthAttentionNoBias(dim, heads, 0, self.window_size)
      
 
 class EarthSpecificBlock2D(EarthSpecificBlockBase):
+  """Class for one block of the 2D attention mechanism with absolute positional bias term."""
+
   def __init__(self, dim, drop_path_ratio, heads, input_shape, device, input_resolution, window_size):
-    '''
-    3D transformer block with Earth-Specific bias and window attention, 
-    see https://github.com/microsoft/Swin-Transformer for the official implementation of 2D window attention.
-    The major difference is that we expand the dimensions to 3 and replace the relative position bias with Earth-Specific bias.
-    '''
+    """
+    Initialize 2D Transformer block with absolute positional bias term.
+    
+    dim: int
+        Size of hidden dimension
+    drop_path_ratio: float
+        Probability that a sample will be dropped during training
+    heads: int
+        Number of attention heads
+    input_shape: torch.Shape
+        of shape 2 describing the number of patches in the (lat, lon) dimensions 
+    device: String
+        device that the code is being run on.
+    input_resolution: List[int]
+        List of length 2 that specifies the dimensions after the patch embedding step incl. padding.
+        For Pangu-Weather, input resolution is (186, 360)
+        For Pangu-Weather-Lite, input resolution is (93, 180)
+    window_size: Tensor
+        Tensor of length(3) describing the window size in (vert, lat, long) dimensions to be used in the attention mechanism.
+    """
     super().__init__(dim, drop_path_ratio, input_resolution, window_size)
     # Define the window size of the neural network 
     self.attention = EarthAttention2D(dim, heads, 0, self.window_size, input_shape)
@@ -279,46 +551,70 @@ class EarthSpecificBlock2D(EarthSpecificBlockBase):
 
   def _window_partition(self, x, window_size):
     """
-    Args:
-        x: (B, H, W, C)
-        window_size (int): window size
+    Partitions input tensor into windows over which attention will be calculated.
+    
+    x: Tensor
+        of shape (n_batch, n_patch_vert, n_patch_lat, n_patch_lon, C)
+    window_size: Tensor
+        of length 2, describing window size in (vert, lat, lon) dimensions
+        = (window_size_lat, window_size_lon)
 
-    Returns:
-        windows: (num_windows*B, window_size, window_size, C)
+    Returns
+    -------
+    windows: Tensor
+        of shape(num_windows*n_batch, window_size_lat, window_size_lon, C)
     """
-    B, H, W, C = x.shape
-    x = x.view(B, H // window_size[0], window_size[0], W // window_size[1], window_size[1], C)
-    windows = x.permute(0, 1, 3, 2, 4, 5).contiguous().view(-1, window_size[0], window_size[1], C)
+    n_batch, n_patch_lat, n_patch_lon, hidden_dim = x.shape
+    x = x.view(n_batch, n_patch_lat // window_size[0], window_size[0], n_patch_lon // window_size[1], window_size[1], hidden_dim)
+    windows = x.permute(0, 1, 3, 2, 4, 5).contiguous().view(-1, window_size[0], window_size[1], hidden_dim)
     return windows
 
-  def _window_reverse(self, windows, window_size, H, W):
+  def _window_reverse(self, windows, window_size, n_patch_lat, n_patch_lon):
       """
-      Args:
-          windows: (num_windows*B, window_size[0], window_size[1], window_size[2], C)
-          window_size (int): Window size
-          Z (int): Number of pressure heights
-          H (int): Height of image
-          W (int): Width of image
+      Reverse window operation to retrieve x Tensor in original shape.
 
-      Returns:
-          x: (B, Z, H, W, C)
+      windows: Tensor
+          of shape (num_windows*B, window_size_lat, window_size_lon, C) == nB,W0,W1,C
+      window_size: Tensor
+        of length 3, describing window size in (vert, lat, lon) dimensions
+
+      n_patch_lat: int
+          Number of patches in the latitude dimension
+      n_patch_lon: int
+          Number of patches in the longitude dimension
+
+      Returns
+      -------
+      x: Tensor
+          of shape (n_batch, n_patch_vert, n_patch_lat, n_patch_lon, C)
       """
-      B = int(windows.shape[0] / (H * W) * (window_size[0] * window_size[1]))
-      x = windows.view(B, H // window_size[0], W // window_size[1], window_size[0], window_size[1], -1)
-      x = x.permute(0, 1, 3, 2, 4, 5).contiguous().view(B, H, W, -1)
+      n_batch = int(windows.shape[0] / (n_patch_lat * n_patch_lon) * (window_size[0] * window_size[1]))
+      x = windows.view(n_batch, n_patch_lat // window_size[0], n_patch_lon // window_size[1], window_size[0], window_size[1], -1)
+      x = x.permute(0, 1, 3, 2, 4, 5).contiguous().view(n_batch, n_patch_lat, n_patch_lon, -1)
 
       return x
 
-  def forward(self, x,  H, W, roll):
-    # Z = 8,
-    # H = 360
-    # W = 181
+  def forward(self, x, n_patch_lat, n_patch_lon, roll):
+    """
+    Forward pass of a single 2D attention block.
 
+    n_patch_lat: int
+        Number of patches in the latitude dimension
+    n_patch_lon: int
+        Number of patches in the longitude dimension
+    roll: bool
+        Specifying if the layer is rolled
+    
+    Returns
+    -------
+    x: Tensor
+        of shape (B, n_patch_lat*n_patch_lon, C)
+    """
     # Save the shortcut for skip-connection
     shortcut = x.clone()     
     
     # Reshape input to three dimensions to calculate window attention
-    x = reshape(x, shape=(x.shape[0],  H, W, x.shape[2]))
+    x = reshape(x, shape=(x.shape[0], n_patch_lat, n_patch_lon, x.shape[2]))
     
     # Zero-pad input accordign to window sizes
     x1_pad    = (self.window_size[0] - (x.shape[1] % self.window_size[0])) % self.window_size[0] // 2
@@ -339,33 +635,33 @@ class EarthSpecificBlock2D(EarthSpecificBlockBase):
     # If two pixels are not adjacent, then mask the attention between them
     # Your can set the matrix element to -1000 when it is not adjacent, then add it to the attention
     # Reorganize data to calculate window attention 
-    x_window = self._window_partition(x, self.window_size) # nW * B, window_size[0], window_size[1], window_size[2], C
+    x_window = self._window_partition(x, self.window_size) # n_windows * B, window_size[0], window_size[1], window_size[2], C
     
     # Get data stacked in 3D cubes, which will further be used to calculated attention among each cube                   
-    x_window = x_window.view(-1, self.window_size[0]*self.window_size[1], x_window.shape[-1])# nW * B, window_size[0], window_size[1], window_size[2], C
+    x_window = x_window.view(-1, self.window_size[0]*self.window_size[1], x_window.shape[-1])# n_windows * B, window_size[0], window_size[1], window_size[2], C
     
-    mask = self._gen_mask_(H=ori_shape[1], W=ori_shape[2]).to(torch.float32)  
+    mask = self._gen_mask_(n_patch_lat=ori_shape[1], n_patch_lon=ori_shape[2]).to(torch.float32)  
 
     # Apply 3D window attention with Earth-Specific bias
     if roll:      
-      attn_windows  = self.attention(x_window, mask)
+      attention_windows  = self.attention(x_window, mask)
     else:
       zero_mask = torch.zeros(mask.shape).to(torch.float32)
-      attn_windows  = self.attention(x_window, zero_mask)
+      attention_windows  = self.attention(x_window, zero_mask)
 
-    attn_windows = attn_windows.view(-1, self.window_size[0], self.window_size[1], x.shape[-1])
+    attention_windows = attention_windows.view(-1, self.window_size[0], self.window_size[1], x.shape[-1])
 
-    x = self._window_reverse(attn_windows, self.window_size, H=x.shape[1], W=x.shape[2])
+    x = self._window_reverse(attention_windows, self.window_size, n_patch_lat=x.shape[1], n_patch_lon=x.shape[2])
 
     # Reshape the tensor back to its original shape
-    x = reshape(x, shape=ori_shape) # B, H, W, C
+    x = reshape(x, shape=ori_shape) # B, n_patch_lat, n_patch_lon, C
 
     if roll:
       # Roll x back for half of the window
       x = torch.roll(x, shifts=(-self.window_size[0]//2, -self.window_size[1]//2), dims=(1, 2))
 
     # Crop the zero padding
-    x = x[:, x2_pad:x2_pad+H, y2_pad:y2_pad+W, :]
+    x = x[:, x2_pad:x2_pad+n_patch_lat, y2_pad:y2_pad+n_patch_lon, :]
     
     # Reshape the tensor back to the input shape 
     x = reshape(x, shape=(x.shape[0], x.shape[1]*x.shape[2], x.shape[3]))
@@ -376,10 +672,23 @@ class EarthSpecificBlock2D(EarthSpecificBlockBase):
 
     return x
   
+  def _gen_mask_(self, n_patch_lat, n_patch_lon):
+    """
+    Generate mask for attention mechanism when fields are rolled. 
 
-  # Windows that wrap around w dimension do not get masked
-  def _gen_mask_(self, H, W):
-    img_mask = torch.zeros((1, H, W, 1))  # 1 Z H W 1
+    n_patch_vert: int
+        Number of patches in the vertical (first) dimension
+    n_patch_lat: int
+        Number of patches in the latitude (second) dimension
+    n_patch_lon: int
+        Number of patches in the longitude (third) dimension
+
+    Returns
+    -------
+    attention_mask: Tensor #TODO: shape
+        attention mask with value of 0 when attention should not be masked and -10000 when masked.
+    """
+    img_mask = torch.zeros((1, n_patch_lat, n_patch_lon, 1))  # 1 n_patch_lat n_patch_lon 1
     h_slices = (slice(0, -self.window_size[0]),
                 slice(-self.window_size[0], -self.window_size[0]//2),
                 slice(-self.window_size[0]//2, None))
@@ -390,31 +699,61 @@ class EarthSpecificBlock2D(EarthSpecificBlockBase):
       cnt += 1
 
     # TODO: check implementation with SWIN transformer archittecture
-    mask_windows = self._window_partition(img_mask, self.window_size)  # nW, window_size, window_size, 1
+    mask_windows = self._window_partition(img_mask, self.window_size)  # n_windows, window_size, window_size, 1
     mask_windows = mask_windows.view(-1, self.window_size[0] * self.window_size[1])
-    attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
-    attn_mask = attn_mask.masked_fill(attn_mask != 0, float(-10000.0)).masked_fill(attn_mask == 0, float(0.0))
-    return attn_mask
+    attention_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
+    attention_mask = attention_mask.masked_fill(attention_mask != 0, float(-10000.0)).masked_fill(attention_mask == 0, float(0.0))
+    return attention_mask
   
 class EarthSpecificBlock2DNoBias(EarthSpecificBlock2D):
+  """Class for one block of the 2D attention mechanism with no bias term."""
+
   def __init__(self, dim, drop_path_ratio, heads, input_shape, device, input_resolution, window_size):
-    '''
-    3D transformer block with Earth-Specific bias and window attention, 
-    see https://github.com/microsoft/Swin-Transformer for the official implementation of 2D window attention.
-    The major difference is that we expand the dimensions to 3 and replace the relative position bias with Earth-Specific bias.
-    '''
+    """
+    Initialize class for 2D attention mechanism with no bias.
+
+    dim: int
+        Size of hidden dimension
+    drop_path_ratio: float
+        Probability that a sample will be dropped during training
+    heads: int
+        Number of attention heads
+    input_shape: torch.Shape
+        of shape 2 describing the number of patches in the (lat, lon) dimensions 
+    device: String
+        device that the code is being run on.
+    input_resolution: List[int]
+        List of length 2 that specifies the dimensions after the patch embedding step incl. padding.
+        For Pangu-Weather, input resolution is (186, 360)
+        For Pangu-Weather-Lite, input resolution is (93, 180)
+    window_size: Tensor
+        Tensor of length(2) describing the window size in (vert, lat, long) dimensions to be used in the attention mechanism.
+    """
     super().__init__(dim, drop_path_ratio, heads, input_shape, device, input_resolution, window_size)
     # Define the window size of the neural network 
     
     self.attention = EarthAttention2DNoBias(dim, heads, 0, self.window_size, input_shape)
     
     # Only generate masks one time @ initialization
-    #self.attn_mask = self._gen_mask_(H=input_resolution[0], W=input_resolution[1])
     self.input_resolution = input_resolution
 
    
 class EarthAttentionBase(nn.Module):
+  """Base class for attention mechanism."""
+
   def __init__(self, dim, heads, dropout_rate, window_size):
+    """
+    Initialize base class for attention.
+
+    dim: int
+        Size of hidden dimension
+    heads: int
+        Number of attention heads
+    dropout_rate: float
+        probability that value is dropped during training
+    window_size: Tensor
+        Tensor of length(3) describing the window size in (vert, lat, long) dimensions to be used in the attention mechanism.
+    """
     super().__init__()
 
     # Initialize several operations
@@ -432,13 +771,28 @@ class EarthAttentionBase(nn.Module):
     self.total_window_size = torch.prod(window_size)
   
   def calculate_attention(self, x):
+    """
+    Calculate attention.
+
+    x: Tensor
+        of shape (n_batch * n_windows, n_patch_in_window, hidden_dim)
+
+    Returns
+    -------
+    attention: Tensor
+        of shape (n_batch * n_windows, n_heads, n_patch_in_window, n_patch_in_window)
+    value: Tensor
+        of shape (n_batch * n_windows, n_heads, n_patch_in_window, hidden_dim // n_heads)
+    original_shape: torch.Size
+        of x at input
+    """
     # Linear layer to create query, key and value
     # Record the original shape of the input BEFORE linear layer (correct?)
-    original_shape = x.shape # x shape: (B*nW, W0*W1*W2, dim)
+    original_shape = x.shape # x shape: (B*n_windows, W0*W1*W2, dim)
     
-    x = self.linear1(x)      # x shape: (B*nW, W0*W1*W2, 3*dim)
+    x = self.linear1(x)      # x shape: (B*n_windows, W0*W1*W2, 3*dim)
     # reshape the data to calculate multi-head attention
-    # q shape: (B*nW, W0*W1*W2, 3, nHead, dim/nHead)
+    # q shape: (B*n_windows, W0*W1*W2, 3, nHead, dim/nHead)
     qkv = reshape(x, shape=(x.shape[0], x.shape[1], 3, self.head_number, self.dim // self.head_number)) 
     # query after permute: (nB, nHead, W0*W1*W2, C/nHead)
     query, key, value = permute(qkv, (2, 0, 3, 1, 4))
@@ -446,46 +800,86 @@ class EarthAttentionBase(nn.Module):
     query = query * self.scale
 
     # Calculated the attention, a learnable bias is added to fix the nonuniformity of the grid.
-    # Attention shape: B*nW, nHeads, N, N (N = W0*W1*W2)
+    # Attention shape: B*n_windows, nHeads, N, N (n_patch_in_window = W0*W1*W2)
     attention = (query @ key.transpose(-2, -1)) # @ denotes matrix multiplication
     return attention, value, original_shape
 
   def mask_attention(self, x, mask, attention, original_shape):
-    # Mask the attention between non-adjacent pixels, e.g., simply add -100 to the masked element.
-    # from SWIN paper
+    """
+    Masks attention between non-adjacent pixels. -10000 is added to masked elements.
+
+    x: Tensor
+    mask: Tensor
+        of shape () # TODO
+    attention: Tensor
+        of shape (n_batch * n_windows, n_heads, n_patch_in_window, n_patch_in_window)
+    value: Tensor
+        of shape (n_batch * n_windows, n_heads, n_patch_in_window, hidden_dim // n_heads)
+    original_shape: torch.Size
+        of x at input = (n_batch * n_windows, n_patch_in_window, hidden_dim)
+
+    Returns
+    -------
+    attention: Tensor
+        masked attention of shape (n_batch * n_windows, n_heads, n_patch_in_window, n_patch_in_window)
+    """
     if attention.get_device() < 0: 
       device = 'cpu'
     else:
       device = attention.get_device()
     mask = mask.to(device)
 
-    # attention shape: nW * B, nHeads, W[0]*W[1]*W[2], W[0]*W[1]*W[2]
-    # mask shape: nW, W[0]*W[1]*W[2], W[0]*W[1]*W[2]
-    nW = mask.shape[0]  # nW
-    N = original_shape[1] # W0*W1*W2
-    B_ = original_shape[0] # B*nW
+    # attention shape: n_windows * B, nHeads, W[0]*W[1]*W[2], W[0]*W[1]*W[2]
+    # mask shape: n_windows, W[0]*W[1]*W[2], W[0]*W[1]*W[2]
+    n_windows = mask.shape[0]  # n_windows
+    n_patch_in_window = original_shape[1] # W0*W1*W2
+    n_windows_total = original_shape[0] # B*n_windows
 
-    # original attention shape: (nW * B, nHead, W0*W1*W2, W0*W1*W2)
-    attention = attention.view(B_ // nW, nW, self.head_number, N, N) # (B, nW, nHead, nHead, W0*W1*W2)
-    attention = attention + mask.unsqueeze(1).unsqueeze(0)           # (B, nW, nHead, W0*W1*W2, W0*W1*W2) + (1,  nW, 1, W0*W1*W2, W0*W1*W2)
-    attention = attention.view(B_, self.head_number, N, N)           # (B*nW, nHead, W0*W1*W2, W0*W1*W2)
+    # original attention shape: (n_windows * B, nHead, W0*W1*W2, W0*W1*W2)
+    attention = attention.view(n_windows_total // n_windows, n_windows, self.head_number, n_patch_in_window, n_patch_in_window) # (B, n_windows, nHead, W0*W1*W2, W0*W1*W2)
+    attention = attention + mask.unsqueeze(1).unsqueeze(0)           # (B, n_windows, nHead, W0*W1*W2, W0*W1*W2) + (1,  n_windows, 1, W0*W1*W2, W0*W1*W2)
+    attention = attention.view(n_windows_total, self.head_number, n_patch_in_window, n_patch_in_window)           # (B*n_windows, nHead, W0*W1*W2, W0*W1*W2)
     return attention
 
   def activate(self, attention):
+    """
+    Apply Softmax activation to attention.
+
+    attention: Tensor
+        of shape (n_batch * n_windows, n_heads, n_patch_in_window, n_patch_in_window)
+
+    Returns
+    -------
+    attention: Tensor
+        of shape (n_batch * n_windows, n_heads, n_patch_in_window, n_patch_in_window)
+    """
     attention = self.Softmax(attention)
     attention = self.dropout(attention)
     return attention
   
-  def mixing_linear_layer(self, attention, value, original_shape): # attention.view(batches*nWindows, nHeads, N, N)
-    # attention shape: (nB, nHeads, W0*W1*W2, W0*W1*W2)
-    # value shape    : (nB, nHeads, W0*W1*W2, C/nHeads)
+  def mixing_linear_layer(self, attention, value, original_shape): # attention.view(batches*n_windows, nHeads, N, N)
+    """
+    Compute (Q@K^T)@V and linear layer to allow mixing.
+
+    attention: Tensor
+        = (Q@K^T)/(sqrt(D)) + bias + masked_attention + Softmax activation.
+        of shape (n_batch * n_windows, n_heads, n_patch_in_window, n_patch_in_window)
+    value: Tensor
+        of shape (n_batch * n_windows, n_heads, n_patch_in_window, hidden_dim // n_heads)
+    original_shape: torch.Size
+        of x at input = (n_batch * n_windows, n_patch_in_window, hidden_dim)        
+
+    Returns
+    -------
+    x: Tensor
+        of shape (n_batch * n_windows, n_patch_in_window, hidden_dim)        
+    """    
     # x shape after mat mul: (nB, nHeads, W0*W1*W2, C/nHeads)
-    
-    x = (attention @ value) # @ denote matrix multiplication
-    # x shape after transpose: (B*nW, W0*W1*W2, nHeads, C/nHeads)
+    x = (attention @ value)
+    # x shape after transpose: (B*n_windows, W0*W1*W2, nHeads, C/nHeads)
     x = torch.transpose(x, 1, 2)
     
-    # original shape: (B*nW, W0*W1*W2, dim)
+    # original shape: (B*n_windows, W0*W1*W2, dim)
     # Reshape tensor to the original shape
     x = reshape(x, shape = original_shape)
 
@@ -495,14 +889,31 @@ class EarthAttentionBase(nn.Module):
     return x
 
 class EarthAttention3DAbsolute(EarthAttentionBase):
+  """
+  3D Attention mechanism with absolute position bias term.
+
+  Attention(Q, K, V) = SoftMax(Q@K^T/sqrt(D) + B @ V,
+  where B=f(height, latitude)
+  """
+
   def __init__(self, dim, heads, dropout_rate, window_size, input_shape):
-    '''
-    3D window attention with the Earth-Specific bias, 
-    see https://github.com/microsoft/Swin-Transformer for the official implementation of 2D window attention.
-    '''
+    """
+    Initialize 3D Attention with absolute positional bias term. 
+
+    dim: int
+        Size of hidden dimension
+    heads: int
+        Number of attention heads
+    dropout_rate: float
+        probability that value is dropped during training
+    window_size: Tensor
+        Tensor of length(3) describing the window size in (vert, lat, long) dimensions to be used in the attention mechanism.
+    input_shape: torch.Shape
+        of shape 3 describing the number of patches in the (vert, lat, lon) dimensions 
+    """
     super().__init__(dim, heads, dropout_rate, window_size)
     
-    # Record the number of different window types
+    # Record the number of different windows
     # negative signs = "upside-down floor division": used to mimic ceiling function
     self.type_of_windows = int(-(input_shape[0]//-window_size[0]) * -(input_shape[1]//-window_size[1]))
     
@@ -521,7 +932,14 @@ class EarthAttention3DAbsolute(EarthAttentionBase):
     
     
   def _construct_index(self):
-    ''' This function construct the position index to reuse symmetrical parameters of the position bias'''
+    """
+    Construct the position index to reuse symmetrical parameters of the absolute position bias.
+    
+    Returns
+    -------
+    position_index: Tensor 
+        of shape #TODO
+    """
     # Index in the pressure level of query matrix
     coords_zi = arange(start=0, end=self.window_size[0])
     # Index in the pressure level of key matrix
@@ -556,22 +974,34 @@ class EarthAttention3DAbsolute(EarthAttentionBase):
     return self.position_index
   
   def forward(self, x, mask):
+    """
+    Forward pass of 3D attention mechanism with absolute positional bias term.
+
+    x: Tensor
+        of shape (n_batch * n_windows, n_patch_in_window, hidden_dim)
+    mask: Tensor
+        of shape #TODO
+    
+    Returns
+    -------
+    x: Tensor
+        of shape (n_batch * n_windows, n_patch_in_window, hidden_dim)
+    """
     attention, value, original_shape = self.calculate_attention(x)
 
     # self.earth_specific_bias is a set of neural network parameters to optimize. 
-    EarthSpecificBias = self.earth_specific_bias[self.position_index] 
+    earth_specific_bias = self.earth_specific_bias[self.position_index] 
       
     # Reshape the learnable bias to the same shape as the attention matrix
-    EarthSpecificBias = reshape(EarthSpecificBias, shape=(self.total_window_size, self.total_window_size, self.type_of_windows, self.head_number))
+    earth_specific_bias = reshape(earth_specific_bias, shape=(self.total_window_size, self.total_window_size, self.type_of_windows, self.head_number))
     # ESB shape after permute: n_windows, n_heads, window size, window size
-    EarthSpecificBias = permute(EarthSpecificBias, (2, 3, 0, 1))
+    earth_specific_bias = permute(earth_specific_bias, (2, 3, 0, 1))
     
-
     # Add the Earth-Specific bias to the attention matrix
-    # Attention shape: nB * nWindows, nHeads, N, N (N = W0*W1*W2)
-    # attention.view(batches, nWindows, nHeads, N, N) + (1, nWindows, nHeads, N, N)
-    attention = attention.view(-1, EarthSpecificBias.shape[0], self.head_number, self.total_window_size, self.total_window_size) + EarthSpecificBias.unsqueeze(0)
-    # attention.view(batches*nWindows, nHeads, N, N)
+    # Attention shape: nB * n_windows, nHeads, N, N (n_patch_in_window = W0*W1*W2)
+    # attention.view(batches, n_windows, nHeads, N, N) + (1, n_windows, nHeads, N, N)
+    attention = attention.view(-1, earth_specific_bias.shape[0], self.head_number, self.total_window_size, self.total_window_size) + earth_specific_bias.unsqueeze(0)
+    # attention.view(batches*n_windows, nHeads, N, N)
     attention = attention.view(-1, self.head_number, self.total_window_size, self.total_window_size)
 
     attention = self.mask_attention(x, mask, attention, original_shape)
@@ -583,6 +1013,13 @@ class EarthAttention3DAbsolute(EarthAttentionBase):
     return x
 
 class EarthAttention3DRelative(EarthAttentionBase):
+    """
+    3D Attention mechanism with relative position bias term.
+
+    Attention(Q, K, V) = SoftMax(Q@K^T/sqrt(D) + B @ V
+    where B is not a function of (height, latitude)
+    """
+
     def __init__(self, dim, heads, dropout_rate, window_size, input_shape, device):
         super().__init__( dim, heads, dropout_rate, window_size)
 
@@ -600,7 +1037,14 @@ class EarthAttention3DRelative(EarthAttentionBase):
         self.position_index = self._construct_index()
 
     def _construct_index(self):
-        ''' This function construct the position index to reuse symmetrical parameters of the position bias'''
+        """
+        Construct the position index to reuse symmetrical parameters of the relative position bias.
+
+        Returns
+        -------
+        position_index: Tensor 
+            of shape #TODO get shape
+        """
         # Index in the pressure level of query matrix
         coords_z = arange(self.window_size[0])
         coords_h = arange(self.window_size[1])
@@ -628,17 +1072,30 @@ class EarthAttention3DRelative(EarthAttentionBase):
         return self.position_index
     
     def forward(self, x, mask):
+      """
+      Forward pass of 3D attention mechanism with relative positional bias term.
+
+      x: Tensor
+          of shape (n_batch * n_windows, n_patch_in_window, hidden_dim)
+      mask: Tensor
+          of shape #TODO
+      
+      Returns
+      -------
+      x: Tensor
+          of shape (n_batch * n_windows, n_patch_in_window, hidden_dim)
+      """
       attention, value, original_shape = self.calculate_attention(x)
 
       # self.earth_specific_bias is a set of neural network parameters to optimize. 
-      EarthSpecificBias = self.earth_specific_bias[self.position_index] 
+      earth_specific_bias = self.earth_specific_bias[self.position_index] 
 
       # Reshape the learnable bias to the same shape as the attention matrix
-      EarthSpecificBias = reshape(EarthSpecificBias, shape=(self.total_window_size, self.total_window_size,  self.head_number))
-      EarthSpecificBias = permute(EarthSpecificBias, (2, 0, 1))
+      earth_specific_bias = reshape(earth_specific_bias, shape=(self.total_window_size, self.total_window_size,  self.head_number))
+      earth_specific_bias = permute(earth_specific_bias, (2, 0, 1))
               
       # Add the Earth-Specific bias to the attention matrix
-      attention = attention + EarthSpecificBias.unsqueeze(0)
+      attention = attention + earth_specific_bias.unsqueeze(0)
       attention = self.mask_attention(x, mask, attention, original_shape)
       attention = self.activate(attention)
       
@@ -648,11 +1105,28 @@ class EarthAttention3DRelative(EarthAttentionBase):
       return x
   
 class EarthAttention2D(EarthAttentionBase):
+  """
+  2D Attention mechanism with absolute position bias term.
+
+  Attention(Q, K, V) = (Softmax(Q@K^T/sqrt(D) + B) @ V
+  where B=f(latitude)
+  """
+
   def __init__(self, dim, heads, dropout_rate, window_size, input_shape):
-    '''
-    3D window attention with the Earth-Specific bias, 
-    see https://github.com/microsoft/Swin-Transformer for the official implementation of 2D window attention.
-    '''
+    """
+    Initialize 2D Attention with absolute positional bias term.
+
+    dim: int
+        Size of hidden dimension
+    heads: int
+        Number of attention heads
+    dropout_rate: float
+        probability that value is dropped during training
+    window_size: Tensor
+        Tensor of length(2) describing the window size in (lat, long) dimensions to be used in the attention mechanism.
+    input_shape: torch.Shape
+        of shape 2 describing the number of patches in the (lat, lon) dimensions 
+    """
     super().__init__(dim, heads, dropout_rate, window_size)
 
     # Record the number of different window types
@@ -671,9 +1145,15 @@ class EarthAttention2D(EarthAttentionBase):
     # Construct position index to reuse self.earth_specific_bias
     self.position_index = self._construct_index()
     
-  # TO BE IMPLEMENTED for 2D
   def _construct_index(self):
-    ''' This function construct the position index to reuse symmetrical parameters of the position bias'''
+    """
+    Construct the position index to reuse symmetrical parameters of the absolute position bias.
+    
+    Returns
+    -------
+    position_index: Tensor 
+        of shape #TODO
+    """
         # Index in the latitude of query matrix
     coords_hi = arange(start=0, end=self.window_size[0])
     # Index in the latitude of key matrix
@@ -702,21 +1182,30 @@ class EarthAttention2D(EarthAttentionBase):
     return self.position_index
     
   def forward(self, x, mask):
-    # Linear layer to create query, key and value
-    # Record the original shape of the input BEFORE linear layer (correct?)
+    """
+    Forward pass of 2D attention mechanism with absolute positional bias term.
 
+    x: Tensor
+        of shape (n_batch * n_windows, n_patch_in_window, hidden_dim)
+    mask: Tensor
+        of shape #TODO
+    
+    Returns
+    -------
+    x: Tensor
+        of shape (n_batch * n_windows, n_patch_in_window, hidden_dim)
+    """
     if x.get_device() < 0: 
       device = 'cpu'
     else:
       device = x.get_device()
     mask = mask.to(device)
 
-    # x shape: (B*nWindows, W0, W1, W2, C)
+    # x shape: (B*n_windows, W0, W1, W2, C)
     original_shape = x.shape 
-    B_ = original_shape[0]
-    B  = B_ // self.type_of_windows
+    n_windows_total = original_shape[0]
     
-    # x shape: (B*nWindows, W0*W1*W2, C)
+    # x shape: (B*n_windows, W0*W1*W2, C)
     x = self.linear1(x)
 
     # reshape the data to calculate multi-head attention
@@ -727,26 +1216,26 @@ class EarthAttention2D(EarthAttentionBase):
     query = query * self.scale
 
     # Calculated the attention, a learnable bias is added to fix the nonuniformity of the grid.
-    # Attention shape: nB * nWindows, nHeads, N, N (N = W0*W1*W2)
+    # Attention shape: nB * n_windows, nHeads, N, N (n_patch_in_window = W0*W1*W2)
     attention = (query @ key.transpose(-2, -1)) # @ denotes matrix multiplication
   
     # self.earth_specific_bias is a set of neural network parameters to optimize. 
-    EarthSpecificBias = self.earth_specific_bias[self.position_index.repeat(attention.shape[0] // self.type_of_windows)] 
+    earth_specific_bias = self.earth_specific_bias[self.position_index.repeat(attention.shape[0] // self.type_of_windows)] 
     # Reshape the learnable bias to the same shape as the attention matrix
-    EarthSpecificBias = reshape(EarthSpecificBias, shape=(self.window_size[0]*self.window_size[1], self.window_size[0]*self.window_size[1], -1, self.head_number))
-    EarthSpecificBias = permute(EarthSpecificBias, (2, 3, 0, 1))
+    earth_specific_bias = reshape(earth_specific_bias, shape=(self.window_size[0]*self.window_size[1], self.window_size[0]*self.window_size[1], -1, self.head_number))
+    earth_specific_bias = permute(earth_specific_bias, (2, 3, 0, 1))
 
     # Add the Earth-Specific bias to the attention matrix
-    attention = attention + EarthSpecificBias 
+    attention = attention + earth_specific_bias 
 
     # Mask the attention between non-adjacent pixels, e.g., simply add -100 to the masked element.
     # from SWIN paper
-    nW = mask.shape[0]
-    N = original_shape[1]
+    n_windows = mask.shape[0]
+    n_patch_in_window = original_shape[1]
 
-    attention = attention.view(B_ // nW, nW, self.head_number, N, N)
+    attention = attention.view(n_windows_total // n_windows, n_windows, self.head_number, n_patch_in_window, n_patch_in_window)
     attention = attention + mask.unsqueeze(1).unsqueeze(0)
-    attention = attention.view(-1, self.head_number, N, N)
+    attention = attention.view(-1, self.head_number, n_patch_in_window, n_patch_in_window)
 
     attention = self.activate(attention)
 
@@ -755,14 +1244,43 @@ class EarthAttention2D(EarthAttentionBase):
     return x
   
 class EarthAttention2DNoBias(EarthAttentionBase):
+  """
+  2D Attention mechanism with absolute position bias term.
+
+  Attention(Q, K, V) = (SoftMax(Q@K^T/sqrt(D)) @ V
+  """
+
   def __init__(self, dim, heads, dropout_rate, window_size, input_shape):
-    '''
-    3D window attention with the Earth-Specific bias, 
-    see https://github.com/microsoft/Swin-Transformer for the official implementation of 2D window attention.
-    '''
+    """
+    Initialize 2D Attention with no positional bias term.
+
+    dim: int
+        Size of hidden dimension
+    heads: int
+        Number of attention heads
+    dropout_rate: float
+        probability that value is dropped during training
+    window_size: Tensor
+        Tensor of length(2) describing the window size in (lat, long) dimensions to be used in the attention mechanism.
+    input_shape: torch.Shape
+        of shape 2 describing the number of patches in the (lat, lon) dimensions 
+    """
     super().__init__(dim, heads, dropout_rate, window_size)
 
   def forward(self, x, mask):
+    """
+    Forward pass of 2D attention mechanism with absolute positional bias term.
+
+    x: Tensor
+        of shape (n_batch * n_windows, n_patch_in_window, hidden_dim)
+    mask: Tensor
+        of shape #TODO
+    
+    Returns
+    -------
+    x: Tensor
+        of shape (n_batch * n_windows, n_patch_in_window, hidden_dim)
+    """
     # Linear layer to create query, key and value
     # Record the original shape of the input BEFORE linear layer (correct?)
     if x.get_device() < 0: 
@@ -771,11 +1289,11 @@ class EarthAttention2DNoBias(EarthAttentionBase):
       device = x.get_device()
     mask = mask.to(device)
 
-    # x shape: (B*nWindows, W0, W1, W2, C)
+    # x shape: (B*n_windows, W0, W1, W2, C)
     original_shape = x.shape 
-    B_ = original_shape[0]
+    n_windows_total = original_shape[0]
     
-    # x shape: (B*nWindows, W0*W1*W2, C)
+    # x shape: (B*n_windows, W0*W1*W2, C)
     x = self.linear1(x)
 
     # reshape the data to calculate multi-head attention
@@ -786,18 +1304,18 @@ class EarthAttention2DNoBias(EarthAttentionBase):
     query = query * self.scale
 
     # Calculated the attention, a learnable bias is added to fix the nonuniformity of the grid.
-    # Attention shape: nB * nWindows, nHeads, N, N (N = W0*W1*W2)
+    # Attention shape: nB * n_windows, nHeads, N, N (n_patch_in_window = W0*W1*W2)
     attention = (query @ key.transpose(-2, -1)) # @ denotes matrix multiplication
   
 
     # Mask the attention between non-adjacent pixels, e.g., simply add -100 to the masked element.
     # from SWIN paper
-    nW = mask.shape[0]
-    N = original_shape[1]
+    n_windows = mask.shape[0]
+    n_patch_in_window = original_shape[1]
 
-    attention = attention.view(B_ // nW, nW, self.head_number, N, N)
+    attention = attention.view(n_windows_total // n_windows, n_windows, self.head_number, n_patch_in_window, n_patch_in_window)
     attention = attention + mask.unsqueeze(1).unsqueeze(0)
-    attention = attention.view(-1, self.head_number, N, N)
+    attention = attention.view(-1, self.head_number, n_patch_in_window, n_patch_in_window)
 
     attention = self.activate(attention)
 
@@ -806,16 +1324,45 @@ class EarthAttention2DNoBias(EarthAttentionBase):
     return x
   
 class EarthAttentionNoBias(EarthAttentionBase):
+  """
+  3D Attention mechanism with no bias term.
+
+  Attention(Q, K, V) = (SoftMax(Q@K^T/sqrt(D)) @ V
+  """
+
   def __init__(self, dim, heads, dropout_rate, window_size):
-    '''
-    3D window attention with the Earth-Specific bias, 
-    see https://github.com/microsoft/Swin-Transformer for the official implementation of 2D window attention.
-    '''
+    """
+    Initialize 3D Attention with no positional bias term.
+
+    dim: int
+        Size of hidden dimension
+    heads: int
+        Number of attention heads
+    dropout_rate: float
+        probability that value is dropped during training
+    window_size: Tensor
+        Tensor of length(3) describing the window size in (vert, lat, long) dimensions to be used in the attention mechanism.
+    input_shape: torch.Shape
+        of shape 3 describing the number of patches in the (vert, lat, lon) dimensions 
+    """
     super().__init__(dim, heads, dropout_rate, window_size)
     self.type_of_windows = 0
     
     
   def forward(self, x, mask):
+    """
+    Forward pass of 2D attention mechanism with absolute positional bias term.
+
+    x: Tensor
+        of shape (n_batch * n_windows, n_patch_in_window, hidden_dim)
+    mask: Tensor
+        of shape #TODO
+    
+    Returns
+    -------
+    x: Tensor
+        of shape (n_batch * n_windows, n_patch_in_window, hidden_dim)
+    """
     attention, value, original_shape = self.calculate_attention(x)
     
     # Mask the attention between non-adjacent pixels, e.g., simply add -100 to the masked element.
@@ -825,7 +1372,7 @@ class EarthAttentionNoBias(EarthAttentionBase):
     attention = self.activate(attention)
     # Calculated the tensor after spatial mixing.
     # Linear layer to post-process operated tensor
-    # attention shape: (B*nW, nHead, W0*W1*W2, W0*W1*W2)
+    # attention shape: (B*n_windows, nHead, W0*W1*W2, W0*W1*W2)
     x = self.mixing_linear_layer(attention, value, original_shape)
     
     return x

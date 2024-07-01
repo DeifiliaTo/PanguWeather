@@ -1,12 +1,22 @@
 import torch
 import torch.nn as nn
 from torch import permute, reshape
-from torch.nn import Conv3d, Conv2d, ConvTranspose3d, ConvTranspose2d
-from DataLoader import LoadConstantMask, LoadConstantMask2D
+from torch.nn import Conv2d, Conv3d, ConvTranspose2d, ConvTranspose3d
+
+from DataLoader import load_constant_mask, load_constant_mask_2D
+
 
 class PatchEmbedding(nn.Module):
+  """Patch Embedding."""
+
   def __init__(self, patch_size, dim, device):
-    '''Patch embedding operation'''
+    """
+    Init.
+    
+    patch_size: Tuple(int, int, int)
+    dim: int
+    device: String
+    """
     super().__init__()
     self.patch_size = patch_size
     self.dim = dim
@@ -15,12 +25,18 @@ class PatchEmbedding(nn.Module):
     self.conv_surface = Conv2d(in_channels=7, out_channels=dim, kernel_size=patch_size[1:], stride=patch_size[1:])
 
     # Load constant masks from the disc
-    self.land_mask, self.soil_type, self.topography = LoadConstantMask(patch_size)
+    self.land_mask, self.soil_type, self.topography = load_constant_mask(patch_size)
     self.land_mask = self.land_mask.to(device)
     self.soil_type = self.soil_type.to(device)
     self.topography = self.topography.to(device)
     
   def forward(self, input, input_surface):
+    """
+    Forward pass of patch embedding.
+    
+    input: Tensor
+    input_surface: Tensor
+    """
     # Input should be padded already, according to the patch size
     input_surface_shape = input_surface.shape
     
@@ -52,8 +68,10 @@ class PatchEmbedding(nn.Module):
     return x
   
 class PatchEmbedding2D(nn.Module):
+  """2D Patch Embedding operation."""
+
   def __init__(self, patch_size, dim, device):
-    '''Patch embedding operation'''
+    """Patch embedding operation."""
     super().__init__()
     self.patch_size = patch_size
     self.dim = dim
@@ -62,12 +80,18 @@ class PatchEmbedding2D(nn.Module):
     self.conv_surface = Conv2d(in_channels=72, out_channels=dim, kernel_size=patch_size, stride=patch_size)
 
     # Load constant masks from the disc
-    self.land_mask, self.soil_type, self.topography = LoadConstantMask2D(patch_size)
+    self.land_mask, self.soil_type, self.topography = load_constant_mask_2D(patch_size)
     self.land_mask = self.land_mask.to(device)
     self.soil_type = self.soil_type.to(device)
     self.topography = self.topography.to(device)
       
   def forward(self, input, input_surface):
+    """
+    Forward pass of 2D patch embedding.
+    
+    input: Tensor
+    input_surface: Tensor
+    """
     # Input should be padded already, according to the patch size
     input_surface_shape = input_surface.shape
   
@@ -94,20 +118,27 @@ class PatchEmbedding2D(nn.Module):
     return x
   
 class PatchRecovery(nn.Module):
+  """Patch recovery operation."""
+
   def __init__(self, patch_size, dim):
-    '''Patch recovery operation'''
+    """
+    Patch recovery. 
+
+    patch_size: Tuple(int, int)
+    dim: int
+    """
     super().__init__()
     # Here we use two transposed convolutions to recover data
     self.conv = ConvTranspose3d(in_channels=dim, out_channels=5, kernel_size=patch_size, stride=patch_size)
     self.conv_surface = ConvTranspose2d(in_channels=dim, out_channels=4, kernel_size=patch_size[1:], stride=patch_size[1:])
 
-  def forward(self, x, Z, H, W):
-    # The inverse operation of the patch embedding operation, patch_size = (2, 4, 4) as in the original paper
+  def forward(self, x, n_patch_vert, n_patch_lat, n_patch_lon):
+    """Perform inverse operation of the patch embedding operation, patch_size = (2, 4, 4) as in the original paper."""
     # Reshape x back to three dimensions
     # Dimensions: (nData, pressure level * latitude * longitude, fields)
     x = permute(x, (0, 2, 1))
     # Dimensions: (nData, fields, pressure level, latitude, longitude)
-    x = reshape(x, shape=(x.shape[0], x.shape[1], Z, H, W))
+    x = reshape(x, shape=(x.shape[0], x.shape[1], n_patch_vert, n_patch_lat, n_patch_lon))
 
     # Call the transposed convolution
     output = self.conv(x[:, :, 1:, :, :])
@@ -117,19 +148,26 @@ class PatchRecovery(nn.Module):
     return output, output_surface
   
 class PatchRecovery2D(nn.Module):
+  """2D Patch recovery option."""
+
   def __init__(self, patch_size, dim):
-    '''Patch recovery operation'''
+    """
+    2D Patch recovery.
+
+    patch_size: Tuple(int, int)
+    dim: int
+    """
     super().__init__()
     # Here we use two transposed convolutions to recover data
     self.conv = ConvTranspose2d(in_channels=dim, out_channels=69, kernel_size=patch_size, stride=patch_size)
 
-  def forward(self, x, H, W):
-    # The inverse operation of the patch embedding operation, patch_size = (2, 4, 4) as in the original paper
+  def forward(self, x, n_patch_lat, n_patch_lon):
+    """2D inverse operation of the patch embedding operation, patch_size = (4, 4) as in the original paper."""
     # Reshape x back to three dimensions
     # Dimensions: (nData, pressure level * latitude * longitude, fields)
     x = permute(x, (0, 2, 1))
     # Dimensions: (nData, fields, pressure level, latitude, longitude)
-    x = reshape(x, shape=(x.shape[0], x.shape[1], H, W))
+    x = reshape(x, shape=(x.shape[0], x.shape[1], n_patch_lat, n_patch_lon))
 
     # Call the transposed convolution
     merged_output = self.conv(x)

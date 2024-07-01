@@ -1,4 +1,6 @@
 import numpy as np
+import torch
+
 
 def TruncatedNormalInit(tensor, mean=0, std=0.02):
     """

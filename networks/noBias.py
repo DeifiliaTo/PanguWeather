@@ -1,56 +1,53 @@
 import sys
+
 sys.path.append("/hkfs/work/workspace/scratch/ke4365-pangu/pangu-weather/networks/")
-from Modules.Embedding import PatchEmbedding, PatchRecovery
-from Modules.Sampling import UpSample, DownSample
-from Modules.Attention import EarthSpecificLayerNoBias
 
-from torch import nn
-import torch.nn as nn
-
-# Common operations for the data, you may design it or simply use deep learning APIs default operations
-# linspace: a tensor version of numpy.linspace
-# MeshGrid: a tensor version of numpy.meshgrid
-# Stack: a tensor version of numpy.stack
-# Flatten: a tensor version of numpy.ndarray.flatten
-# TensorSum: a tensor version of numpy.sum
-# TensorAbs: a tensor version of numpy.abs
-# Concatenate: a tensor version of numpy.concatenate
-from torch import linspace
-
-# Common functions for training models
-from torch import load
-
-# Custom functions to read your data from the disc
 import torch
+from Modules.Attention import EarthSpecificLayerNoBias
+from Modules.Embedding import PatchEmbedding, PatchRecovery
+from Modules.Sampling import DownSample, UpSample
+from torch import linspace, nn
+
 
 class PanguModel(nn.Module):
-  def __init__(self, C=192, patch_size=(2, 8, 8), device='cpu'):
+  """Class definition of no bias model."""
+
+  def __init__(self, dim=192, patch_size=(2, 8, 8), device='cpu'):
+    """
+    Initialize Pangu model.
+
+    dim: int
+    patch_size = Tuple(int, int, int)
+            patch size in the height, lat, long directions
+    device: String
+            device that the code is offloaded onto.
+    """
     super().__init__()
     # Drop path rate is linearly increased as the depth increases
     drop_list = linspace(0, 0.2, 8) # used to be drop_path_list
     
-    self.C = C
+    self.dim = dim
     self.patch_size = patch_size
 
     # Patch embedding
-    self._input_layer = PatchEmbedding(patch_size, dim=self.C, device=device)
+    self._input_layer = PatchEmbedding(patch_size, dim=self.dim, device=device)
 
     # Four basic layers
-    self.layer1 = EarthSpecificLayerNoBias(2, self.C, drop_list[:2], 6,  input_shape=[8, 93], device=device, input_resolution=(8, 93, 180), window_size=torch.tensor([2, 6, 12]))
-    self.layer2 = EarthSpecificLayerNoBias(6, 2*self.C, drop_list[2:], 12, input_shape=[8, 46], device=device, input_resolution=(8, 46, 90), window_size=torch.tensor([2, 6, 12]))
-    self.layer3 = EarthSpecificLayerNoBias(6, 2*self.C, drop_list[2:], 12, input_shape=[8, 46], device=device, input_resolution=(8, 46, 90), window_size=torch.tensor([2, 6, 12]))
-    self.layer4 = EarthSpecificLayerNoBias(2, self.C, drop_list[:2], 6,  input_shape=[8, 93], device=device, input_resolution=(8, 93, 180), window_size=torch.tensor([2, 6, 12]))
+    self.layer1 = EarthSpecificLayerNoBias(2, self.dim, drop_list[:2], 6,  input_shape=[8, 93], device=device, input_resolution=(8, 93, 180), window_size=torch.tensor([2, 6, 12]))
+    self.layer2 = EarthSpecificLayerNoBias(6, 2*self.dim, drop_list[2:], 12, input_shape=[8, 46], device=device, input_resolution=(8, 46, 90), window_size=torch.tensor([2, 6, 12]))
+    self.layer3 = EarthSpecificLayerNoBias(6, 2*self.dim, drop_list[2:], 12, input_shape=[8, 46], device=device, input_resolution=(8, 46, 90), window_size=torch.tensor([2, 6, 12]))
+    self.layer4 = EarthSpecificLayerNoBias(2, self.dim, drop_list[:2], 6,  input_shape=[8, 93], device=device, input_resolution=(8, 93, 180), window_size=torch.tensor([2, 6, 12]))
 
     # Upsample and downsample
-    self.upsample = UpSample(self.C*2, self.C, nHeight=8, nLat=46, nLon=90, height_crop=(0,0), lat_crop=(0, 1), lon_crop=(0, 0))
+    self.upsample = UpSample(self.dim*2, self.dim, nHeight=8, nLat=46, nLon=90, height_crop=(0,0), lat_crop=(0, 1), lon_crop=(0, 0))
 
-    self.downsample = DownSample(self.C, downsampling=(2,2))
+    self.downsample = DownSample(self.dim, downsampling=(2,2))
     
     # Patch Recovery
-    self._output_layer = PatchRecovery(self.patch_size, dim=2*self.C) # added patch size
+    self._output_layer = PatchRecovery(self.patch_size, dim=2*self.dim) # added patch size
     
   def forward(self, input, input_surface):
-    '''Backbone architecture'''
+    """Forward pass of No Bias model."""
     # Embed the input fields into patches
 
     x = self._input_layer(input, input_surface)

@@ -1,8 +1,17 @@
 import torch.nn as nn
-from torch.nn import Linear, GELU, Dropout
+from torch.nn import GELU, Dropout, Linear
+
 
 class MLP(nn.Module):
+  """MLP."""
+
   def __init__(self, dim, dropout_rate):
+    """
+    Initialize MLP.
+    
+    dim: int
+    dropout_rate: float
+    """
     super().__init__()
     '''MLP layers, same as most vision transformer architectures.'''
     self.linear1 = Linear(dim, dim * 4)
@@ -11,6 +20,7 @@ class MLP(nn.Module):
     self.drop = Dropout(p=dropout_rate)
     
   def forward(self, x):
+    """Forward function of MLP."""
     x = self.linear1(x)
     x = self.activation(x)
     x = self.drop(x)
