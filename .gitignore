@@ -7,7 +7,7 @@ __pycache__/*
 input/*
 *.ipynb
 *gfx/*
-trained_models/*
+*/trained_models/*
 *.perun*
 run*.sh
 SSM/*
