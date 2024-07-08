@@ -1,7 +1,7 @@
-import xarray as xr
-import numpy as np
-import glob
 import random
+
+import numpy as np
+import xarray as xr
 
 iterations = 10
 n_per_iteration = 200

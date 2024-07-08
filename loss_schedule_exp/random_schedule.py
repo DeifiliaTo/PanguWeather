@@ -1,27 +1,45 @@
+import sys
+
 import torch
 
-import sys
 # caution: path[0] is reserved for script path (or '' in REPL)
 sys.path.insert(1, '/home/hk-project-epais/ke4365/pangu-weather')
+import datetime
+import json
+import os
+import time
+
+import numpy as np
+import torch.distributed as dist
+from torch.cuda.amp import GradScaler
+from torch.nn.parallel import DistributedDataParallel
+
+import utils.eval as eval
+from networks.noBias import PanguModel as NoBiasModel
 from networks.pangu import PanguModel as PanguModel
 from networks.PanguLite import PanguModel as PanguModelLite
-from networks.relativeBias import PanguModel as RelativeBiasModel
-from networks.noBias import PanguModel as NoBiasModel
-from networks.Three_layers import PanguModel as ThreeLayerModel
 from networks.PanguLite2DAttention import PanguModel as PanguLite2D
 from networks.PositionalEmbedding import PanguModel as PositionalEmbedding
+from networks.relativeBias import PanguModel as RelativeBiasModel
+from networks.Three_layers import PanguModel as ThreeLayerModel
 from utils.data_loader_multifiles import get_data_loader
-import torch
-from torch.cuda.amp import autocast, GradScaler
-import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP
-import os
-import utils.eval as eval
-import time, datetime, json
-import gc
-import numpy as np
+
 
 def init_distributed(params):
+    """
+    Initialize DistributedDataParallel or set to CPU.
+    
+    params: Dict
+        dictionary specifying run parameters
+    
+    Returns
+    -------
+    device: String
+    slurm_localid: int
+    gpus_per_node: int
+    rank: int
+    world_size: int
+    """
     rank = int(os.getenv("SLURM_PROCID"))       # Get individual process ID.
     world_size = int(os.getenv("SLURM_NTASKS")) # Get overall number of processes.
     slurm_job_gpus = os.getenv("SLURM_JOB_GPUS")
@@ -35,11 +53,11 @@ def init_distributed(params):
         assert gpu == slurm_localid
         device = f"cuda:{slurm_localid}"
         torch.cuda.set_device(device)
-        # Initialize DDP.
+        # Initialize DistributedDataParallel.
         if params['data_distributed']:
             dist.init_process_group(backend="nccl", rank=rank, world_size=world_size, init_method="env://")
     else:
-        # Initialize DDP.
+        # Initialize DistributedDataParallel.
         if params['data_distributed']:
             dist.init_process_group(backend="gloo", rank=rank, world_size=world_size, init_method="env://")
         # set device to CPU
@@ -53,30 +71,38 @@ def init_distributed(params):
     return device, slurm_localid, gpus_per_node, rank, world_size
 
 def training_loop(params, device, slurm_localid, gpus_per_node):
+    """
+    train the model.
+
+    params: Dict
+    device: String
+    slurm_localid: int
+    gpus_per_node: int
+    """
     # Define patch size, data loader, model
-    C          = params['C']
-    twoDimensional = False
+    dim          = params['C']
+    two_dimensional = False
     if params['model'] == '2D' or params['model'] == '2Dim192':
-        twoDimensional = True
-    train_data_loader, train_dataset, train_sampler = get_data_loader(params, params['train_data_path'], dist.is_initialized(), mode='train', device=device, patch_size=params['patch_size'], subset_size=params['subset_size'], twoD=twoDimensional)
-    valid_data_loader, valid_dataset = get_data_loader(params, params['valid_data_path'], dist.is_initialized(), mode='validation', device=device, patch_size=params['patch_size'], subset_size=params['validation_subset_size'], twoD=twoDimensional)
+        two_dimensional = True
+    train_data_loader, train_dataset, train_sampler = get_data_loader(params, params['train_data_path'], dist.is_initialized(), mode='train', device=device, patch_size=params['patch_size'], subset_size=params['subset_size'], two_dimensional=two_dimensional)
+    valid_data_loader, valid_dataset = get_data_loader(params, params['valid_data_path'], dist.is_initialized(), mode='validation', device=device, patch_size=params['patch_size'], subset_size=params['validation_subset_size'], two_dimensional=two_dimensional)
 
     if params['model'] == 'pangu':
-        model = PanguModel(device=device, C=C, patch_size=params['patch_size'])
+        model = PanguModel(device=device, C=dim, patch_size=params['patch_size'])
     elif params['model'] == 'panguLite':
-        model = PanguModelLite(device=device, C=C, patch_size=params['patch_size'])
+        model = PanguModelLite(device=device, C=dim, patch_size=params['patch_size'])
     elif params['model'] == 'relativeBias':
-        model = RelativeBiasModel(device=device, C=C, patch_size=params['patch_size'])
+        model = RelativeBiasModel(device=device, C=dim, patch_size=params['patch_size'])
     elif params['model'] == 'noBiasLite':
-        model = NoBiasModel(device=device, C=C, patch_size=params['patch_size'])
+        model = NoBiasModel(device=device, C=dim, patch_size=params['patch_size'])
     elif params['model'] == '2D':
-        model = PanguLite2D(device=device, C=int(1.5*C), patch_size=params['patch_size'][1:])
+        model = PanguLite2D(device=device, C=int(1.5*dim), patch_size=params['patch_size'][1:])
     elif params['model'] == 'threeLayer':
-        model = ThreeLayerModel(device=device, C=C, patch_size=params['patch_size'])
+        model = ThreeLayerModel(device=device, C=dim, patch_size=params['patch_size'])
     elif params['model'] == 'positionEmbedding':
-        model = PositionalEmbedding(device=device, C=C, patch_size=params['patch_size'])
+        model = PositionalEmbedding(device=device, C=dim, patch_size=params['patch_size'])
     elif params['model'] == '2Dim192':
-        model = PanguLite2D(device=device, C=int(C), patch_size=params['patch_size'][1:])
+        model = PanguLite2D(device=device, C=int(dim), patch_size=params['patch_size'][1:])
     else: 
         raise NotImplementedError(params['model'] + ' model does not exist.')
 
@@ -84,7 +110,7 @@ def training_loop(params, device, slurm_localid, gpus_per_node):
 
     # DDP wrapper if GPUs are available
     if dist.is_initialized() and gpus_per_node > 0:
-        model = DDP( # Wrap model with DDP.
+        model = DistributedDataParallel( # Wrap model with DDP.
                 model, 
                 device_ids=[slurm_localid], 
                 output_device=slurm_localid,
@@ -93,9 +119,6 @@ def training_loop(params, device, slurm_localid, gpus_per_node):
     
     optimizer = torch.optim.Adam(model.parameters(), lr=5e-4, weight_decay=3e-6)
     
-
-    start = time.perf_counter() # Measure training time.
-
     if dist.is_initialized():
         rank = dist.get_rank()
         world_size = dist.get_world_size()
@@ -207,7 +230,7 @@ def training_loop(params, device, slurm_localid, gpus_per_node):
         model.eval()
         with torch.no_grad():
             # Get rank-local numbers of correctly classified and overall samples in training and validation set.
-            val_loss, MSE, acc, total_samples, dt_validation = eval.get_loss(model, valid_data_loader, device, loss1, loss2, lat_crop=params['lat_crop'], lon_crop=params['lon_crop'], world_size=world_size)
+            val_loss, mse, acc, total_samples, dt_validation = eval.get_loss(model, valid_data_loader, device, loss1, loss2, lat_crop=params['lat_crop'], lon_crop=params['lon_crop'], world_size=world_size)
 
             if rank == 0:
                 valid_loss_history.append(val_loss[0])
@@ -231,15 +254,15 @@ def training_loop(params, device, slurm_localid, gpus_per_node):
                 print(f'Epoch Average: {int(epoch)+1:03d}/{int(num_epochs):03d} ')
                 print(f'| Mean L1 Training Loss: {epoch_average_loss :.5f} ')
                 print(f'| Mean L1 Validation Loss: {val_loss[0] :.5f} ')
-                print(f'| MSE T850: {MSE[0][0] :.3f} ')
-                print(f'| MSE Z500: {MSE[1][0] :.3f} ')
-                print(f'| MSE U850: {MSE[2][0] :.3f} ')
-                print(f'| MSE V850: {MSE[3][0] :.3f} ')
-                print(f'| MSE Q850: {MSE[4][0]*1000 :.3f} ')
-                print(f'| MSE T2M:  {MSE[5][0] :.3f} ')
-                print(f'| MSE U10:  {MSE[6][0] :.3f} ')
-                print(f'| MSE V10:  {MSE[7][0] :.3f} ')
-                print(f'| MSE MSL:  {MSE[8][0] :.3f} ')
+                print(f'| MSE T850: {mse[0][0] :.3f} ')
+                print(f'| MSE Z500: {mse[1][0] :.3f} ')
+                print(f'| MSE U850: {mse[2][0] :.3f} ')
+                print(f'| MSE V850: {mse[3][0] :.3f} ')
+                print(f'| MSE Q850: {mse[4][0]*1000 :.3f} ')
+                print(f'| MSE T2M:  {mse[5][0] :.3f} ')
+                print(f'| MSE U10:  {mse[6][0] :.3f} ')
+                print(f'| MSE V10:  {mse[7][0] :.3f} ')
+                print(f'| MSE MSL:  {mse[8][0] :.3f} ')
                 print(f'| ACC T850: {acc[0][0] :.3f} ')
                 print(f'| ACC Z500: {acc[1][0] :.3f} ')
                 print(f'| ACC U850: {acc[2][0] :.3f} ')
@@ -336,7 +359,7 @@ if __name__ == '__main__':
         if not params['restart']:
             try:
                 os.mkdir(params['save_dir'])
-            except:
+            except ValueError:
                 raise ValueError("Could not create directory")
     
             # dump parameters into json directory
@@ -344,7 +367,7 @@ if __name__ == '__main__':
                 json.dump(params, params_file)
         
     # initialize patch size: currently, patch size is only (2, 8, 8) for PanguLite. PS is (2, 4, 4) for all other sizes.
-    if params['Lite'] == True:
+    if params['Lite']:
         params['patch_size'] = (2, 8, 8)
         if params['model'] == '2D' or params['model'] == '2Dim192':
             params['batch_size'] = 12

@@ -29,7 +29,7 @@ class EarthSpecificLayerBase(nn.Module):
     Forward pass of the EarthSpecificLayer. The input is rolled every other layer. Checkpoint activation is used to reduce memory requirements.
 
     x: Tensor
-      Input of shape (B, n_patch_vert, n_patch_lat, n_patch_lon, n_variables) #TODO: correct?
+      Input of shape (n_batch, n_patch_vert*n_patch_lat*n_patch_lon, hidden_dim)
     n_patch_vert: int
       Number of patches in the vertical (first) dimension
     n_patch_lat: int
@@ -165,7 +165,7 @@ class EarthSpecificLayer2D(EarthSpecificLayerBase):
     Forward pass of Earth-Specific layers for 2D attention mechanism with absolute positional bias term.
     
     x: Tensor
-        Input to model of shape (B, n_patch_lat, n_patch_lon, n_variables*n_patch_vert) #TODO correct?
+        Input to model of shape (n_batch, n_patch_lat*n_patch_lon, hidden_dim)
     n_patch_lat: int
         Number of patches in the latitude dimension.
     n_patch_lon: int
@@ -281,7 +281,8 @@ class EarthSpecificBlockBase(nn.Module):
 
     Returns
     -------
-    attention_mask: Tensor #TODO: shape
+    attention_mask: Tensor 
+        of shape (n_windows, n_patch_in_window, n_patch_in_window) #TODO: verify
         attention mask with value of 0 when attention should not be masked and -10000 when masked.
     """
     img_mask = torch.zeros((1, n_patch_vert, n_patch_lat, n_patch_lon, 1))  # 1 n_patch_vert n_patch_lat n_patch_lon 1
@@ -577,7 +578,6 @@ class EarthSpecificBlock2D(EarthSpecificBlockBase):
           of shape (num_windows*B, window_size_lat, window_size_lon, C) == nB,W0,W1,C
       window_size: Tensor
         of length 3, describing window size in (vert, lat, lon) dimensions
-
       n_patch_lat: int
           Number of patches in the latitude dimension
       n_patch_lon: int
@@ -685,7 +685,8 @@ class EarthSpecificBlock2D(EarthSpecificBlockBase):
 
     Returns
     -------
-    attention_mask: Tensor #TODO: shape
+    attention_mask: Tensor 
+        of shape (n_windows, n_patch_in_window, n_patch_in_window)
         attention mask with value of 0 when attention should not be masked and -10000 when masked.
     """
     img_mask = torch.zeros((1, n_patch_lat, n_patch_lon, 1))  # 1 n_patch_lat n_patch_lon 1
@@ -810,7 +811,7 @@ class EarthAttentionBase(nn.Module):
 
     x: Tensor
     mask: Tensor
-        of shape () # TODO
+        of shape (n_windows, n_patch_in_window, n_patch_in_window)
     attention: Tensor
         of shape (n_batch * n_windows, n_heads, n_patch_in_window, n_patch_in_window)
     value: Tensor
@@ -938,7 +939,7 @@ class EarthAttention3DAbsolute(EarthAttentionBase):
     Returns
     -------
     position_index: Tensor 
-        of shape #TODO
+        of shape (n_patch_in_window)
     """
     # Index in the pressure level of query matrix
     coords_zi = arange(start=0, end=self.window_size[0])
@@ -980,7 +981,7 @@ class EarthAttention3DAbsolute(EarthAttentionBase):
     x: Tensor
         of shape (n_batch * n_windows, n_patch_in_window, hidden_dim)
     mask: Tensor
-        of shape #TODO
+        of shape (n_windows, n_patch_in_window, n_patch_in_window)
     
     Returns
     -------
@@ -991,7 +992,7 @@ class EarthAttention3DAbsolute(EarthAttentionBase):
 
     # self.earth_specific_bias is a set of neural network parameters to optimize. 
     earth_specific_bias = self.earth_specific_bias[self.position_index] 
-      
+    
     # Reshape the learnable bias to the same shape as the attention matrix
     earth_specific_bias = reshape(earth_specific_bias, shape=(self.total_window_size, self.total_window_size, self.type_of_windows, self.head_number))
     # ESB shape after permute: n_windows, n_heads, window size, window size
@@ -1043,7 +1044,7 @@ class EarthAttention3DRelative(EarthAttentionBase):
         Returns
         -------
         position_index: Tensor 
-            of shape #TODO get shape
+            of shape (n_patch_in_window)
         """
         # Index in the pressure level of query matrix
         coords_z = arange(self.window_size[0])
@@ -1078,7 +1079,7 @@ class EarthAttention3DRelative(EarthAttentionBase):
       x: Tensor
           of shape (n_batch * n_windows, n_patch_in_window, hidden_dim)
       mask: Tensor
-          of shape #TODO
+          of shape (n_windows, n_patch_in_window, n_patch_in_window)
       
       Returns
       -------
@@ -1152,7 +1153,7 @@ class EarthAttention2D(EarthAttentionBase):
     Returns
     -------
     position_index: Tensor 
-        of shape #TODO
+         of shape (n_patch_in_window)
     """
         # Index in the latitude of query matrix
     coords_hi = arange(start=0, end=self.window_size[0])
@@ -1188,7 +1189,7 @@ class EarthAttention2D(EarthAttentionBase):
     x: Tensor
         of shape (n_batch * n_windows, n_patch_in_window, hidden_dim)
     mask: Tensor
-        of shape #TODO
+        of shape (n_windows, n_patch_in_window, n_patch_in_window)
     
     Returns
     -------
@@ -1274,7 +1275,7 @@ class EarthAttention2DNoBias(EarthAttentionBase):
     x: Tensor
         of shape (n_batch * n_windows, n_patch_in_window, hidden_dim)
     mask: Tensor
-        of shape #TODO
+        of shape (n_windows, n_patch_in_window, n_patch_in_window)
     
     Returns
     -------
@@ -1289,7 +1290,7 @@ class EarthAttention2DNoBias(EarthAttentionBase):
       device = x.get_device()
     mask = mask.to(device)
 
-    # x shape: (B*n_windows, W0, W1, W2, C)
+    # x shape: (n_batch*n_windows, W0, W1, W2, C)
     original_shape = x.shape 
     n_windows_total = original_shape[0]
     
@@ -1356,7 +1357,7 @@ class EarthAttentionNoBias(EarthAttentionBase):
     x: Tensor
         of shape (n_batch * n_windows, n_patch_in_window, hidden_dim)
     mask: Tensor
-        of shape #TODO
+        of shape (n_windows, n_patch_in_window, n_patch_in_window)
     
     Returns
     -------

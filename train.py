@@ -23,7 +23,20 @@ from utils.data_loader_multifiles import get_data_loader
 
 
 def init_distributed(params):
-    """Initialize DistributedDataParallel or set to CPU."""
+    """
+    Initialize DistributedDataParallel or set to CPU.
+    
+    params: Dict
+        dictionary specifying run parameters
+    
+    Returns
+    -------
+    device: String
+    slurm_localid: int
+    gpus_per_node: int
+    rank: int
+    world_size: int
+    """
     rank = int(os.getenv("SLURM_PROCID"))       # Get individual process ID.
     world_size = int(os.getenv("SLURM_NTASKS")) # Get overall number of processes.
     slurm_job_gpus = os.getenv("SLURM_JOB_GPUS")
@@ -68,29 +81,29 @@ def training_loop(params, device, slurm_localid, gpus_per_node):
     two_dimensional = False
     if params['model'] == '2D' or params['model'] == '2Dim192' or params['model'] == '2DPosEmb' or params['model'] == '2DPosEmbLite':
         two_dimensional = True
-    train_data_loader, train_dataset, train_sampler = get_data_loader(params, params['train_data_path'], dist.is_initialized(), mode='train', device=device, patch_size=params['patch_size'], subset_size=params['subset_size'], twoD=two_dimensional)
-    valid_data_loader, valid_dataset = get_data_loader(params, params['valid_data_path'], dist.is_initialized(), mode='validation', device=device, patch_size=params['patch_size'], subset_size=params['validation_subset_size'], twoD=two_dimensional)
+    train_data_loader, train_dataset, train_sampler = get_data_loader(params, params['train_data_path'], dist.is_initialized(), mode='train', device=device, patch_size=params['patch_size'], subset_size=params['subset_size'], two_dimensional=two_dimensional)
+    valid_data_loader, valid_dataset = get_data_loader(params, params['valid_data_path'], dist.is_initialized(), mode='validation', device=device, patch_size=params['patch_size'], subset_size=params['validation_subset_size'], two_dimensional=two_dimensional)
 
     if params['model'] == 'pangu':
-        model = PanguModel(device=device, C=dim, patch_size=params['patch_size'])
+        model = PanguModel(device=device, dim=dim, patch_size=params['patch_size'])
     elif params['model'] == 'panguLite':
-        model = PanguModelLite(device=device, C=dim, patch_size=params['patch_size'])
+        model = PanguModelLite(device=device, dim=dim, patch_size=params['patch_size'])
     elif params['model'] == 'relativeBias':
-        model = RelativeBiasModel(device=device, C=dim, patch_size=params['patch_size'])
+        model = RelativeBiasModel(device=device, dim=dim, patch_size=params['patch_size'])
     elif params['model'] == 'noBiasLite':
-        model = NoBiasModel(device=device, C=dim, patch_size=params['patch_size'])
+        model = NoBiasModel(device=device, dim=dim, patch_size=params['patch_size'])
     elif params['model'] == '2D':
-        model = PanguLite2D(device=device, C=int(1.5*dim), patch_size=params['patch_size'][1:])
+        model = PanguLite2D(device=device, dim=int(1.5*dim), patch_size=params['patch_size'][1:])
     elif params['model'] == 'threeLayer':
-        model = ThreeLayerModel(device=device, C=dim, patch_size=params['patch_size'])
+        model = ThreeLayerModel(device=device, dim=dim, patch_size=params['patch_size'])
     elif params['model'] == 'positionEmbedding':
-        model = PositionalEmbedding(device=device, C=dim, patch_size=params['patch_size'])
+        model = PositionalEmbedding(device=device, dim=dim, patch_size=params['patch_size'])
     elif params['model'] == '2DPosEmb':
-        model = TwoDimPosEmb(device=device, C=int(1.5*dim), patch_size=params['patch_size'][1:])
+        model = TwoDimPosEmb(device=device, dim=int(1.5*dim), patch_size=params['patch_size'][1:])
     elif params['model'] == '2DPosEmbLite':
-        model = TwoDimPosEmbLite(device=device, C=int(1.5*dim), patch_size=params['patch_size'][1:])
+        model = TwoDimPosEmbLite(device=device, dim=int(1.5*dim), patch_size=params['patch_size'][1:])
     elif params['model'] == '2Dim192':
-        model = PanguLite2D(device=device, C=int(dim), patch_size=params['patch_size'][1:])
+        model = PanguLite2D(device=device, dim=int(dim), patch_size=params['patch_size'][1:])
     else: 
         raise NotImplementedError(params['model'] + ' model does not exist.')
 
@@ -285,8 +298,8 @@ if __name__ == '__main__':
     params['num_epochs'] = 5
     num_epochs = params['num_epochs']
     params['C'] = 192
-    params['subset_size'] = None# 100000
-    params['validation_subset_size'] = None # 1500
+    params['subset_size'] = 8
+    params['validation_subset_size'] = 6
     params['restart'] = False
     params['hash'] = "20240522_295466069"
     params['Lite'] = True
@@ -304,7 +317,7 @@ if __name__ == '__main__':
     # positionEmbedding     = absolute position embedding
 
     # Save directory
-    base_save_dir = '/hkfs/work/workspace/scratch/ke4365-pangu/pangu-weather/trained_models/panguTime/'
+    base_save_dir = '/hkfs/work/workspace/scratch/ke4365-pangu/pangu-weather/trained_models/test/'
         
     
     # Set seeds for reproducability

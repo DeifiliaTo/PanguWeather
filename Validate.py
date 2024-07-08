@@ -3,7 +3,7 @@ import os
 
 import torch
 import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.nn.parallel import DistributedDataParallel
 
 import utils.eval as eval
 from networks.noBias import PanguModel as NoBiasModel
@@ -15,6 +15,20 @@ from utils.data_loader_multifiles import get_data_loader
 
 
 def init_distributed(params):
+    """
+    Initialize DistributedDataParallel or set to CPU.
+    
+    params: Dict
+        dictionary specifying run parameters
+    
+    Returns
+    -------
+    device: String
+    slurm_localid: int
+    gpus_per_node: int
+    rank: int
+    world_size: int
+    """
     rank = int(os.getenv("SLURM_PROCID"))       # Get individual process ID.
     world_size = int(os.getenv("SLURM_NTASKS")) # Get overall number of processes.
     slurm_job_gpus = os.getenv("SLURM_JOB_GPUS")
@@ -28,11 +42,11 @@ def init_distributed(params):
         assert gpu == slurm_localid
         device = f"cuda:{slurm_localid}"
         torch.cuda.set_device(device)
-        # Initialize DDP.
+        # Initialize DistributedDataParallel.
         if params['data_distributed']:
             dist.init_process_group(backend="nccl", rank=rank, world_size=world_size, init_method="env://")
     else:
-        # Initialize DDP.
+        # Initialize DistributedDataParallel.
         if params['data_distributed']:
             dist.init_process_group(backend="gloo", rank=rank, world_size=world_size, init_method="env://")
         # set device to CPU
@@ -46,20 +60,28 @@ def init_distributed(params):
     return device, slurm_localid, gpus_per_node, rank, world_size
 
 def validation(params, device, slurm_localid, gpus_per_node):
+    """
+    Evalute model in a data-parallel way.
+    
+    params: Dict
+    device: String
+    slurm_localid: int
+    gpus_per_node: int
+    """
     # Define patch size, data loader, model
-    C          = params['C']
-    test_data_loader, test_dataset = get_data_loader(params, params['train_data_path'], dist.is_initialized(), mode='testing', device=device, patch_size=params['patch_size'], subset_size=params['subset_size'], forecast_length=params['forecast_length'])
+    dim          = params['C']
+    test_data_loader, _ = get_data_loader(params, params['train_data_path'], dist.is_initialized(), mode='testing', device=device, patch_size=params['patch_size'], subset_size=params['subset_size'], forecast_length=params['forecast_length'])
 
     if params['model'] == 'pangu':
-        model = PanguModel(device=device, C=C, patch_size=params['patch_size'])
+        model = PanguModel(device=device, dim=dim, patch_size=params['patch_size'])
     elif params['model'] == 'panguLite':
-        model = PanguModelLite(device=device, C=C, patch_size=params['patch_size'])
+        model = PanguModelLite(device=device, dim=dim, patch_size=params['patch_size'])
     elif params['model'] == 'relativeBias':
-        model = RelativeBiasModel(device=device, C=C, patch_size=params['patch_size'])
+        model = RelativeBiasModel(device=device, dim=dim, patch_size=params['patch_size'])
     elif params['model'] == 'noBias':
-        model = NoBiasModel(device=device, C=C, patch_size=params['patch_size'])
+        model = NoBiasModel(device=device, dim=dim, patch_size=params['patch_size'])
     elif params['model'] == 'threeLayer':
-        model = ThreeLayerModel(device=device, C=C, patch_size=params['patch_size'])
+        model = ThreeLayerModel(device=device, dim=dim, patch_size=params['patch_size'])
     elif params['model'] == '2D':
         raise NotImplementedError("2D model is not yet implemented")
     else: 
@@ -67,9 +89,9 @@ def validation(params, device, slurm_localid, gpus_per_node):
 
     model = model.to(torch.float32).to(device)
 
-    # DDP wrapper if GPUs are available
+    # DistributedDataParallel wrapper if GPUs are available
     if dist.is_initialized() and gpus_per_node > 0:
-        model = DDP( # Wrap model with DDP.
+        model = DistributedDataParallel( # Wrap model with DistributedDataParallel.
                 model, 
                 device_ids=[slurm_localid], 
                 output_device=slurm_localid,
@@ -85,20 +107,17 @@ def validation(params, device, slurm_localid, gpus_per_node):
     model.load_state_dict(state['model_state'])
 
     # Training loop
-    loss1 = torch.nn.L1Loss()
-    loss2 = torch.nn.L1Loss()
-
     model.eval()
     with torch.no_grad():
         # Get rank-local numbers of correctly classified and overall samples in training and validation set.
-        MSE, acc, total_samples, dt_validation = eval.get_validation_loss(model, test_data_loader, device, lat_crop=params['lat_crop'], lon_crop=params['lon_crop'], forecast_length=params['forecast_length'])
+        mse, acc, total_samples, dt_validation = eval.get_validation_loss(model, test_data_loader, device, lat_crop=params['lat_crop'], lon_crop=params['lon_crop'], forecast_length=params['forecast_length'])
         
         if rank == 0:
-            print(f'| MSE T850: {MSE[0][0] :.3f}, {MSE[0][1] :.3f}, {MSE[0][2] :.3f}, {MSE[0][3] :.3f}, {MSE[0][4] :.3f}')
-            print(f'| MSE Z500: {MSE[1][0] :.3f}, {MSE[1][1] :.3f}, {MSE[1][2] :.3f}, {MSE[1][3] :.3f}, {MSE[1][4] :.3f}')
-            print(f'| MSE T2M:  {MSE[2][0] :.3f}, {MSE[2][1] :.3f}, {MSE[2][2] :.3f}, {MSE[2][3] :.3f}, {MSE[2][4] :.3f}')
-            print(f'| MSE U10:  {MSE[3][0] :.3f}, {MSE[3][1] :.3f}, {MSE[3][2] :.3f}, {MSE[3][3] :.3f}, {MSE[3][4] :.3f}')
-            print(f'| MSE V10:  {MSE[4][0] :.3f}, {MSE[4][1] :.3f}, {MSE[4][2] :.3f}, {MSE[4][3] :.3f}, {MSE[4][4] :.3f}')
+            print(f'| MSE T850: {mse[0][0] :.3f}, {mse[0][1] :.3f}, {mse[0][2] :.3f}, {mse[0][3] :.3f}, {mse[0][4] :.3f}')
+            print(f'| MSE Z500: {mse[1][0] :.3f}, {mse[1][1] :.3f}, {mse[1][2] :.3f}, {mse[1][3] :.3f}, {mse[1][4] :.3f}')
+            print(f'| MSE T2M:  {mse[2][0] :.3f}, {mse[2][1] :.3f}, {mse[2][2] :.3f}, {mse[2][3] :.3f}, {mse[2][4] :.3f}')
+            print(f'| MSE U10:  {mse[3][0] :.3f}, {mse[3][1] :.3f}, {mse[3][2] :.3f}, {mse[3][3] :.3f}, {mse[3][4] :.3f}')
+            print(f'| MSE V10:  {mse[4][0] :.3f}, {mse[4][1] :.3f}, {mse[4][2] :.3f}, {mse[4][3] :.3f}, {mse[4][4] :.3f}')
             print(f'| ACC T850: {acc[0][0] :.3f}, {acc[0][1] :.3f}, {acc[0][2] :.3f}, {acc[0][3] :.3f}, {acc[0][4] :.3f}')
             print(f'| ACC Z500: {acc[1][0] :.3f}, {acc[1][1] :.3f}, {acc[1][2] :.3f}, {acc[1][3] :.3f}, {acc[1][4] :.3f}')
             print(f'| ACC T2M:  {acc[2][0] :.3f}, {acc[2][1] :.3f}, {acc[2][2] :.3f}, {acc[2][3] :.3f}, {acc[2][4] :.3f}')

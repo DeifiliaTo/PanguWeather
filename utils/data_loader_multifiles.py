@@ -67,20 +67,21 @@ def get_data_loader(params, file_path, distributed, mode, device, patch_size, su
     Return data loader for 2 or 3D dataset.
     
     params: Dict
-            configuration file
+        configuration file
     file_path: String
-            path to data directory
+        path to data directory
     distributed: bool
-            flag for DDP
+        flag for DDP
     mode: String
-            of value 'training', 'testing', 'validation'
+        of value 'training', 'testing', 'validation'
     device: String
-            device that the code is running/offloaded on
+        device that the code is running/offloaded on
     patch_size: Tuple(int, int, Optional[int])
+        Number of pixels in ([vert], lat, lon) dimensions per patch
     forecast_length: int
-            For training, always 1. For validation, defines the number of autoregressive steps to roll-out to.
+        For training, always 1. For validation, defines the number of autoregressive steps to roll-out to.
     two_dimensional: bool
-            Flag for 2D vs 3D model.
+        Flag for 2D vs 3D model.
 
     """
     if not two_dimensional:
@@ -118,16 +119,17 @@ class GetDataset(Dataset):
         params: Dict
             configuration file
         file_path: String
-                path to data directory
+            path to data directory
         distributed: bool
-                flag for DDP
+            flag for DDP
         mode: String
-                of value 'training', 'testing', 'validation'
+            of value 'training', 'testing', 'validation'
         device: String
-                device that the code is running/offloaded on
+            device that the code is running/offloaded on
         patch_size: Tuple(int, int, Optional[int])
+            Number of pixels in ([vert], lat, lon) dimensions per patch
         forecast_length: int
-                For training, always 1. For validation, defines the number of autoregressive steps to roll-out to.
+            For training, always 1. For validation, defines the number of autoregressive steps to roll-out to.
         """
         self.params = params
         self.file_path = file_path

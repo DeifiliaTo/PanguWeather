@@ -18,6 +18,10 @@ def get_loss(model, data_loader, device, loss1, loss2, lat_crop, lon_crop, world
                   Dataloader.
     device : String
             device (cpu or gpu) that the code is running on #
+    loss1 : torch.nn.L1Loss
+            loss function for pressure levels
+    loss2 : torch.nn.L2Loss
+            loss function for surface levels
     lat_crop : Tuple(int, int)
             cropping along the latitude dimension of the data required to obtain original dimensions
             i.e., if the original image has size (721, 1440), and the patch size is (8, 8),
@@ -96,7 +100,6 @@ def get_loss(model, data_loader, device, loss1, loss2, lat_crop, lon_crop, world
     total_samples = torch.tensor([0]).to(device) # count samples on each processor
 
     for i, data in enumerate(data_loader):
-    
         input, input_surface, target, target_surface = data[0], data[1], data[2][0], data[3][0]
         input = input.to(torch.float32).to(device)
         input_surface = input_surface.to(torch.float32).to(device)
@@ -105,30 +108,33 @@ def get_loss(model, data_loader, device, loss1, loss2, lat_crop, lon_crop, world
 
         # Call the model and get the output
         output, output_surface = model(input, input_surface)
+        # If there is a 2D model, we need to reshape the pressure level data back to 3 dimensionis
         if len(output.shape) == 4:
             output = output.reshape(-1, 5, 13, output.shape[-2], output.shape[-1])
             target = target.reshape(-1, 5, 13, target.shape[-2], target.shape[-1])
+        
+        # Multiply by the pressure and surface weights
         output, output_surface = output * pressure_weights_epoch, output_surface * surface_weights_epoch
         target, target_surface = target * pressure_weights_epoch, target_surface * surface_weights_epoch
         
-        # We use the MAE loss to train the model
-        # The weight of surface loss is 0.25
-        # Different weight can be applied for different fields if needed
+        # MAE is used to train and evaluate the model.
+        # Currently, pressure losses are weighted with 1, surface losses weighted with 0.25
         loss[0] += 1 * loss1(output, target) + 0.25 * loss2(output_surface, target_surface)
 
+        # undo the pressure and surface weights for MSE and ACC metrics
         output, output_surface = output / pressure_weights_epoch, output_surface / surface_weights_epoch
         target, target_surface = target / pressure_weights_epoch, target_surface / surface_weights_epoch
 
-
-        mse['T850'][0] += calc_mse(output, target, variable='T', pressure_level=850, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
-        mse['Z500'][0] += calc_mse(output, target, variable='Z', pressure_level=500, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
-        mse['T2M'][0]  += calc_mse(output_surface, target_surface, variable='T2M', upper_variable=False, pressure_level=None, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
-        mse['U10'][0]  += calc_mse(output_surface, target_surface, variable='U10', upper_variable=False, pressure_level=None, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
-        mse['V10'][0]  += calc_mse(output_surface, target_surface, variable='V10', upper_variable=False, pressure_level=None, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
-        mse['MSL'][0]  += calc_mse(output_surface, target_surface, variable='MSL', upper_variable=False, pressure_level=None, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
-        mse['U850'][0] += calc_mse(output, target, variable='U', pressure_level=850, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
-        mse['V850'][0] += calc_mse(output, target, variable='V', pressure_level=850, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
-        mse['Q850'][0] += calc_mse(output, target, variable='Q', pressure_level=850, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+        # Accumulate MSE and ACC for the data samples
+        mse['T850'][0] += calc_mse(output, target, variable='T', pressure_level=850, weights=weights, std_plevel=std_plevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+        mse['Z500'][0] += calc_mse(output, target, variable='Z', pressure_level=500, weights=weights, std_plevel=std_plevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+        mse['T2M'][0]  += calc_mse(output_surface, target_surface, variable='T2M', upper_variable=False, pressure_level=None, weights=weights, std_plevel=std_plevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+        mse['U10'][0]  += calc_mse(output_surface, target_surface, variable='U10', upper_variable=False, pressure_level=None, weights=weights, std_plevel=std_plevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+        mse['V10'][0]  += calc_mse(output_surface, target_surface, variable='V10', upper_variable=False, pressure_level=None, weights=weights, std_plevel=std_plevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+        mse['MSL'][0]  += calc_mse(output_surface, target_surface, variable='MSL', upper_variable=False, pressure_level=None, weights=weights, std_plevel=std_plevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+        mse['U850'][0] += calc_mse(output, target, variable='U', pressure_level=850, weights=weights, std_plevel=std_plevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+        mse['V850'][0] += calc_mse(output, target, variable='V', pressure_level=850, weights=weights, std_plevel=std_plevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+        mse['Q850'][0] += calc_mse(output, target, variable='Q', pressure_level=850, weights=weights, std_plevel=std_plevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
 
         acc['T850'][0] += calc_acc(output, target, variable='T', pressure_level=850, weights=weights, climatology_plevel=climatology_plevel, climatology_slevel=climatology_slevel,  std_plevel=std_plevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
         acc['Z500'][0] += calc_acc(output, target, variable='Z', pressure_level=500, weights=weights, climatology_plevel=climatology_plevel, climatology_slevel=climatology_slevel,  std_plevel=std_plevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
@@ -140,21 +146,24 @@ def get_loss(model, data_loader, device, loss1, loss2, lat_crop, lon_crop, world
         acc['V850'][0] += calc_acc(output, target, variable='V', pressure_level=850, weights=weights, climatology_plevel=climatology_plevel, climatology_slevel=climatology_slevel,  std_plevel=std_plevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
         acc['Q850'][0] += calc_acc(output, target, variable='Q', pressure_level=850, weights=weights, climatology_plevel=climatology_plevel, climatology_slevel=climatology_slevel,  std_plevel=std_plevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
 
+        # Accumulate total number of samples
         total_samples[0] += input.shape[0]
     
+    # All-reduce operations
     torch.distributed.all_reduce(total_samples)
     torch.distributed.all_reduce(loss)
+
     for variable in ['T850', 'Z500', 'T2M', 'U10', 'V10', 'U850', 'V850', 'Q850', 'MSL']:
         torch.distributed.all_reduce(mse[variable])
         torch.distributed.all_reduce(acc[variable])
 
     end_validation_time = time.perf_counter()
 
-
+    # Average loss values
     loss /= world_size # average the loss for world size
     loss /= len(data_loader)
     
-    # Reduce all values on each core
+    # take root and mean of MSE and take mean of ACC
     for variable in ['T850', 'Z500', 'T2M', 'U10', 'V10', 'U850', 'V850', 'Q850', 'MSL']:
         mse[variable] = torch.sqrt(mse[variable]/total_samples)
         acc[variable] = acc[variable] / total_samples
@@ -252,11 +261,11 @@ def get_validation_loss(model, data_loader, device, lat_crop, lon_crop, world_si
             # Call the model and get the output
             output, output_surface = model(input, input_surface)
 
-            mse['T850'][j]  += calc_mse(output, target_, variable='T', pressure_level=850, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
-            mse['Z500'][j]  += calc_mse(output, target_, variable='Z', pressure_level=500, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
-            mse['T2M'][j]   += calc_mse(output_surface, target_surface_, variable='T2M', upper_variable=False, pressure_level=None, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
-            mse['U10'][j]   += calc_mse(output_surface, target_surface_, variable='U10', upper_variable=False, pressure_level=None, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
-            mse['V10'][j]   += calc_mse(output_surface, target_surface_, variable='V10', upper_variable=False, pressure_level=None, weights=weights, mean_plevel=mean_plevel, std_plevel=std_plevel, mean_slevel=mean_slevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+            mse['T850'][j]  += calc_mse(output, target_, variable='T', pressure_level=850, weights=weights, std_plevel=std_plevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+            mse['Z500'][j]  += calc_mse(output, target_, variable='Z', pressure_level=500, weights=weights, std_plevel=std_plevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+            mse['T2M'][j]   += calc_mse(output_surface, target_surface_, variable='T2M', upper_variable=False, pressure_level=None, weights=weights, std_plevel=std_plevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+            mse['U10'][j]   += calc_mse(output_surface, target_surface_, variable='U10', upper_variable=False, pressure_level=None, weights=weights, std_plevel=std_plevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
+            mse['V10'][j]   += calc_mse(output_surface, target_surface_, variable='V10', upper_variable=False, pressure_level=None, weights=weights, std_plevel=std_plevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
             acc['T850'][j] += calc_acc(output, target_, variable='T', pressure_level=850, weights=weights, climatology_plevel=climatology_plevel, climatology_slevel=climatology_slevel,   std_plevel=std_plevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
             acc['Z500'][j] += calc_acc(output, target_, variable='Z', pressure_level=500, weights=weights, climatology_plevel=climatology_plevel, climatology_slevel=climatology_slevel,   std_plevel=std_plevel, std_slevel=std_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
             acc['T2M'][j]  += calc_acc(output_surface, target_surface_, variable='T2M', upper_variable=False, pressure_level=None, weights=weights, climatology_plevel=climatology_plevel, std_plevel=std_plevel, std_slevel=std_slevel, climatology_slevel=climatology_slevel, lat_crop=lat_crop, lon_crop=lon_crop)
@@ -276,8 +285,10 @@ def get_validation_loss(model, data_loader, device, lat_crop, lon_crop, world_si
     
     end_validation_time = time.perf_counter()
 
-    total_samples = len(data_loader.dataset) - len(data_loader.dataset) % input.shape[0] # find total number of data points
-    loss /= world_size # average the loss for world size
+    # find total number of data points
+    total_samples = len(data_loader.dataset) - len(data_loader.dataset) % input.shape[0] 
+    # average the loss for world size
+    loss /= world_size 
     
     # Take square root of MSE
     for variable in ['T850', 'Z500', 'T2M', 'U10', 'V10']:
@@ -296,7 +307,8 @@ def calc_weight(n_lat, cossum=458.36551167):
     
     Returns
     -------
-    latitude_based weighting factor: np.array(float)
+    weight: np.array(float)
+        latitude_based weighting factor
     """
     latitude = np.linspace(np.pi/2.0, -np.pi/2.0, n_lat)
     weight = n_lat * np.cos(latitude) / cossum
@@ -309,10 +321,52 @@ upper_variable_indexing = {'Z': 0, 'Q': 1, 'T': 2, 'U': 3, 'V': 4}
 surface_variable_indexing = {'MSL': 0, 'U10': 1, 'V10': 2, 'T2M': 3}
 PL_indexing = {1000: 0, 925: 1, 850: 2, 700: 3, 600: 4, 500: 5, 400: 6, 300: 7, 250: 8, 200: 9, 150: 10, 100: 11, 50: 12}
 
-def calc_mse(result_values, target_values, variable, pressure_level=500, weights=None, n_lat=721, n_lon=1440, upper_variable=True, mean_plevel=None, std_plevel=None, mean_slevel=None, std_slevel=None, lat_crop=(3,4), lon_crop=(0,0)):
-    """Calculate the non-normalized MSE with helper function."""
-    divisor = torch.sqrt(torch.tensor([1440.0*721])).to(result_values.device)
-    # results_values shape: [batch_size, 5 variables, 14 pressure levels, n_lat, n_lon]
+def calc_mse(result_values, target_values, variable, pressure_level=500, weights=None, n_lat=721, n_lon=1440, upper_variable=True, std_plevel=None, std_slevel=None, lat_crop=(3,4), lon_crop=(0,0)):
+    """
+    Calculate the MSE, returned in relevant standard units (K, m/s, etc.).
+
+    result_values: Tensor
+        of shape (n_batch, n_fields, n_vert, n_lat, n_lon)
+        n_vert default: 14
+    target_values: Tensor
+        of shape (n_batch, n_fields, n_vert, n_lat, n_lon)
+        n_vert default: 14
+    variable: String
+        key word specifying the variable
+    pressure_level: int
+        pressure level that MSE should be performed on
+    weights: Tensor
+        latitude_based weighting factor of length n_lat
+    n_lat: int
+        number of pixels in the lat dimension in the original image
+        default: 721
+    n_lon: int
+        number of pixels in the lat dimension in the original image
+        default: 1440
+    upper_variable: bool
+        True if mse is calculated for a pressure variable
+        False if mse is calculated for a surface variable
+    std_pLevel: Tensor
+        of shape (1, n_fields, n_pressure_levels, 1, 1)
+        n_pressure_levels default: 13
+    std_slevel: Tensor
+        of shape (1, n_surface_fieelds, 1, 1)
+    lat_crop: Tuple(int, int)
+        cropping applied to the left and right dimensions to obtain the original size of the image
+        if image size if (721, 1440) and patch_size is (2, 4, 4), lat_crop = (1, 2)
+        if image size if (721, 1440) and patch_size is (2, 8, 8), lat_crop = (3, 4)
+    lon_crop: Tuple(int, int)
+        cropping applied to the top and bottom dimensions to obtain the original size of the image
+        if image size if (721, 1440) and patch_size is (2, 4, 4), lon_crop = (0, 0)
+        if image size if (721, 1440) and patch_size is (2, 8, 8), lon_crop = (0, 0)
+
+    Returns
+    -------
+    mean_squared_error: Tensor
+        of shape (n_batch, n_fields, n_vert, n_lat, n_lon)
+    """
+    divisor = torch.sqrt(torch.tensor([n_lon*n_lat])).to(result_values.device)
+    # MSE = ((target - result) * stdev) ** 2
     if upper_variable:
         mean_squared_error = ((target_values[:, upper_variable_indexing[variable], PL_indexing[pressure_level], lat_crop[0]:-lat_crop[1] or None, lon_crop[0]:-lon_crop[1] or None] - 
               result_values[:, upper_variable_indexing[variable], PL_indexing[pressure_level], lat_crop[0]:-lat_crop[1] or None, lon_crop[0]:-lon_crop[1] or None]) * 
@@ -329,8 +383,49 @@ def calc_mse(result_values, target_values, variable, pressure_level=500, weights
     return mean_squared_error.item()
 
 def calc_acc(result_values, target_values, variable, pressure_level, weights=None, n_lat=721, n_lon=1440, upper_variable=True, climatology_plevel=None, climatology_slevel=None, std_plevel=None, std_slevel=None, lat_crop=(3,4), lon_crop=(0,0)):
-    """Calculate ACC with helper function."""
-    # results_values shape: [batch_size, 5 variables, 14 pressure levels, n_lat, n_lon]
+    """
+    Calculate the ACC, returned in relevant standard units (K, m/s, etc.).
+
+    result_values: Tensor
+        of shape (n_batch, n_fields, n_vert, n_lat, n_lon)
+        n_vert default: 14
+    target_values: Tensor
+        of shape (n_batch, n_fields, n_vert, n_lat, n_lon)
+        n_vert default: 14
+    variable: String
+        key word specifying the variable
+    pressure_level: int
+        pressure level that MSE should be performed on
+    weights: Tensor
+        of length n_lat
+    n_lat: int
+        number of pixels in the lat dimension in the original image
+        default: 721
+    n_lon: int
+        number of pixels in the lat dimension in the original image
+        default: 1440
+    upper_variable: bool
+        True if mse is calculated for a pressure variable
+        False if mse is calculated for a surface variable
+    std_pLevel: Tensor
+        of shape (1, n_fields, n_pressure_levels, 1, 1)
+        n_pressure_levels default: 13
+    std_slevel: Tensor
+        of shape (1, n_surface_fieelds, 1, 1)
+    lat_crop: Tuple(int, int)
+        cropping applied to the left and right dimensions to obtain the original size of the image
+        if image size if (721, 1440) and patch_size is (2, 4, 4), lat_crop = (1, 2)
+        if image size if (721, 1440) and patch_size is (2, 8, 8), lat_crop = (3, 4)
+    lon_crop: Tuple(int, int)
+        cropping applied to the top and bottom dimensions to obtain the original size of the image
+        if image size if (721, 1440) and patch_size is (2, 4, 4), lon_crop = (0, 0)
+        if image size if (721, 1440) and patch_size is (2, 8, 8), lon_crop = (0, 0)
+
+    Returns
+    -------
+    acc_sum: Tensor
+        of shape (n_batch, n_fields, n_vert, n_lat, n_lon)
+    """
     if upper_variable:
         target_anomoly = (target_values[:, upper_variable_indexing[variable], PL_indexing[pressure_level], lat_crop[0]:-lat_crop[1] or None, lon_crop[0]:-lon_crop[1] or None] *
                           std_plevel[0, upper_variable_indexing[variable], PL_indexing[pressure_level]].flatten() - 

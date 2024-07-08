@@ -26,13 +26,18 @@ class DownSample(nn.Module):
     Forward pass of Downsample 3D.
     
     x: Tensor
-        input tensor
+        input tensor of shape (n_batch, n_patch_vert, n_patch_lat, n_patch_lon, hidden_dimension)
     n_patch_vert: int
         number of patches in the vertical dimension.
     n_patch_lat: int
         number of patches in the longitude dimension.
     n_patch_lon: int
         number of patches in the latitude dimension.
+
+    Returns
+    -------
+    x: Tensor
+        of shape (n_batch, n_patch_vert*n_patch_lat//2*n_patch_lon//2, 2*hidden_dimension)
     """
     # Reshape x to three dimensions for downsampling
     x = reshape(x, shape=(x.shape[0], n_patch_vert, n_patch_lat, n_patch_lon, x.shape[-1]))
@@ -45,7 +50,7 @@ class DownSample(nn.Module):
 
     x = torch.nn.functional.pad(x, pad=(0, 0, z1_pad, z2_pad, y1_pad, y2_pad), mode='constant', value=0)
 
-    # Reorganize x to reduce the resolution: simply change the order and downsample from (8, 360, 182) to (8, 180, 91)
+    # Reorganize x to reduce the resolution: simply change the order and downsample from (8, 182, 360) to (8, 91, 180)
     n_patch_vert, n_patch_lat, n_patch_lon = x.shape[1:4]
     # Reshape x to facilitate downsampling
     x = reshape(x, shape=(x.shape[0], n_patch_vert, n_patch_lat//2, 2, n_patch_lon//2, 2, x.shape[-1]))
@@ -65,10 +70,17 @@ class DownSample2D(nn.Module):
   """Downsample 2D."""
 
   def __init__(self, dim, downsampling=(2,2)):
-    """2D Down-sampling operation."""
+    """
+    Initialize 2D Down-sampling operation.
+    
+    dim: int
+        hidden dimension of input
+    downsampling: Tuple(int, int)
+        Number of patches to downsample in (lat, lon) dimensions.
+    """
     super().__init__()
     # A linear function and a layer normalization
-    self.linear = Linear(4*dim, 2*dim, bias=False)
+    self.linear = Linear(4*dim, 2*dim, bias=False) # TODO: Modify 4, 2 to correspond to different downsampling dimensions
     self.norm = LayerNorm(4*dim)
     self.downsampling = downsampling
   
@@ -77,7 +89,7 @@ class DownSample2D(nn.Module):
     Forward pass of Downsample 2D.
 
     x: Tensor
-        input tensor
+        input tensor of shape (n_batch, n_patch_lon*n_patch_lat, hidden_dimension)
     n_patch_lat: int
         number of patches in the latitude dimension.
     n_patch_lon: int
@@ -86,6 +98,7 @@ class DownSample2D(nn.Module):
     Returns
     -------
     x: Tensor
+        of shape (n_batch, n_patch_lat/downsampling[0], n_patch_lon/downsampling[1], hidden_dim*2)
     """
     # Reshape x to three dimensions for downsampling
     x = reshape(x, shape=(x.shape[0], n_patch_lon, n_patch_lat, x.shape[-1]))
@@ -161,26 +174,32 @@ class UpSample(nn.Module):
   
   def forward(self, x):
     """
-    Forward pass of Upsample. 
+    Forward pass of 3D Upsample. 
 
     x: Tensor
-        input tensor
+        of shape (n_batch, n_patch_vert*n_patch_lat*n_patch_lon, input_dim)
+        In lite model, n_patch_lat = 46, n_patch_lon = 90
 
     Returns
     -------
     x: Tensor
+        of shape (n_batch, n_patch_vert*n_patch_lat*n_patch_lon*4, output_dim); 
+        middle dimension is cropped to shape before downsampling.
+        i.e., in lite model, n_patch_lat = 91, n_patch_lon = 180
     """
     # Call the linear functions to increase channels of the data
+    # x shape: (n_batch, n_patch_vert*n_patch_lat*n_patch_lon, input_dim)
     x = self.linear1(x)
+    # x shape: (n_batch, n_patch_vert*n_patch_lat*n_patch_lon, output_dim*4)
 
     # Reorganize x to increase the resolution: simply change the order and upsample from (8, 180, 91) to (8, 360, 182)
     # Reshape x to facilitate upsampling.
     x = reshape(x, shape=(x.shape[0], self.n_height, self.n_lat, self.n_lon, 2, 2, x.shape[-1]//4))
     # Change the order of x
     x = permute(x, (0,1,2,4,3,5,6))
-    # Reshape to get Tensor with a resolution of (8, 360, 182)
+    # Reshape to get Tensor with a resolution of (n_batch, n_patch_vert, n_patch_lat, n_patch_lon, output_dim)
     x = reshape(x, shape=(x.shape[0], self.n_height, self.n_lat*2, self.n_lon*2, x.shape[-1]))    
-
+    
     # Crop the output to the input shape of the network
     x = x[:, self.height_crop[0]:-self.height_crop[1] or None, self.lat_crop[0]:-self.lat_crop[1] or None, self.lon_crop[0]:-self.lon_crop[1] or None, :] 
 
@@ -238,10 +257,18 @@ class UpSample2D(nn.Module):
   
   def forward(self, x):
     """
-    Forward pass of Upsample.
+    Forward pass of 2D Upsample.
 
     x: Tensor
-        input tensor
+        of shape (n_batch, n_patch_lat*n_patch_lon, input_dim)
+        In lite model, n_patch_lat = 46, n_patch_lon = 90
+
+    Returns
+    -------
+    x: Tensor
+        of shape (n_batch, n_patch_lat*n_patch_lon*4, output_dim); 
+        middle dimension is cropped to shape before downsampling.
+        i.e., in lite model, n_patch_lat = 91, n_patch_lon = 180
     """
     # Call the linear functions to increase channels of the data
     x = self.linear1(x)
@@ -251,9 +278,9 @@ class UpSample2D(nn.Module):
     x = reshape(x, shape=(x.shape[0], self.n_lat, self.n_lon, 2, 2, x.shape[-1]//4))
     # Change the order of x
     x = permute(x, (0,1,3,2, 4, 5))
-    # Reshape to get Tensor with a resolution of (8, 360, 182)
+    # After reshape: (n_batch, n_patch_lat, n_patch_lon, output_dim)
     x = reshape(x, shape=(x.shape[0], self.n_lat*2, self.n_lon*2, x.shape[-1]))    
-
+    
     # Crop the output to the input shape of the network
     x = x[:, self.lat_crop[0]:-self.lat_crop[1] or None, self.lon_crop[0]:-self.lon_crop[1] or None, :] 
 

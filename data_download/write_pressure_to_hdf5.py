@@ -2,21 +2,21 @@
 
 import argparse
 import os
-import time
 
 import h5py
-from netCDF4 import Dataset as DS
+from netCDF4 import Dataset
 
 
 def writetofile(src, dest, channel_idx, varslist, src_idx=0, frmt='nc'):
+    """Write nc to hdf5."""
     if os.path.isfile(src):
         batch = 2**4
         
-        Nimgtot = 4#src_shape[0]
+        n_img_tot = 4#src_shape[0]
 
-        Nimg = Nimgtot
+        n_img = n_img_tot
         base = 0
-        end = Nimgtot
+        end = n_img_tot
         idx = base
 
         with h5py.File(dest, 'a') as fdest:
@@ -24,10 +24,10 @@ def writetofile(src, dest, channel_idx, varslist, src_idx=0, frmt='nc'):
                 
                 if frmt == 'nc':
                     print("src name", src)
-                    fsrc = DS(src, 'r', format="NETCDF4")
+                    fsrc = Dataset(src, 'r', format="NETCDF4")
                     print(fsrc['time'])
-                    Nimg = fsrc['time'].shape[0]
-                    end = Nimg
+                    n_img = fsrc['time'].shape[0]
+                    end = n_img
                     batch = end # TODO: currently not suitable for parallel writes
                     fsrc = fsrc.variables[varslist]
                 elif frmt == 'h5':
@@ -35,13 +35,10 @@ def writetofile(src, dest, channel_idx, varslist, src_idx=0, frmt='nc'):
                 
 
                 if 'fields' not in fdest:
-                    fdest.create_dataset('fields', shape=(Nimg, 4, 721, 1440), dtype='f') # dims: 4 time points
+                    fdest.create_dataset('fields', shape=(n_img, 4, 721, 1440), dtype='f') # dims: 4 time points
                                                                             #       4 variables
                                                                             #       721 latitude
                                                                             #       1440 longitude
-                
-                start = time.time()
-                
                 while idx<end:
                     if end - idx < batch:
                         if len(fsrc.shape) == 4:
@@ -61,53 +58,38 @@ def writetofile(src, dest, channel_idx, varslist, src_idx=0, frmt='nc'):
                         print("ims shape", ims.shape)
                         fdest['fields'][idx:idx+batch,  channel_idx, :, :] = ims
                         idx+=batch
-                        ttot = time.time() - start
-                        eta = (end - base)/((idx - base)/ttot)
-                        hrs = eta//3600
-                        mins = (eta - 3600*hrs)//60
-                        secs = (eta - 3600*hrs - 60*mins)
-    
-                ttot = time.time() - start
-                hrs = ttot//3600
-                mins = (ttot - 3600*hrs)//60
-                secs = (ttot - 3600*hrs - 60*mins)
-                channel_idx += 1 
+                        
 
 def writepltofile(src, dest, channel_idx, varslist, src_idx=0, frmt='nc'):
+    """Write pressure level data to hdf5."""
     if os.path.isfile(src):
         batch = 0
-        
-        
-        Nimgtot = 96 #src_shape[0]
-
-        Nimg = Nimgtot
+        n_img_tot = 96 #src_shape[0]
+        n_img = n_img_tot
         base = 0
-        end = Nimgtot
+        end = n_img_tot
         idx = base
 
         with h5py.File(dest, 'a') as fdest:
             for variable_name in varslist:
     
                 if frmt == 'nc':
-                    fsrc = DS(src, 'r', format="NETCDF4")
+                    fsrc = Dataset(src, 'r', format="NETCDF4")
                     print("src", src)
                     print("fsrc", fsrc)
-                    Nimg = fsrc['t'].shape[0]
+                    n_img = fsrc['t'].shape[0]
                     fsrc = fsrc.variables[variable_name]
-                    end = Nimg
+                    end = n_img
                     batch = end # TODO: currently not suitable for parallel writes
                 elif frmt == 'h5':
                     fsrc = h5py.File(src, 'r')[varslist[0]]
-                print("fsrc shape", fsrc.shape)
-                print("Nimg ", Nimg)
+                
                 if 'fields' not in fdest:
-                    fdest.create_dataset('fields', shape=(Nimg, 5, 13, 721, 1440), dtype='f') # dims: 4 time points
+                    fdest.create_dataset('fields', shape=(n_img, 5, 13, 721, 1440), dtype='f') # dims: 4 time points
                                                                             #       5 variables
                                                                             #       13 pressure levels
                                                                             #       721 latitude
                                                                             #       1440 longitude
-                print("batch", batch)
-                start = time.time()
                 
                 while idx<end:
                     if end - idx < batch:
@@ -123,23 +105,10 @@ def writepltofile(src, dest, channel_idx, varslist, src_idx=0, frmt='nc'):
                             ims = fsrc[idx:idx+batch,src_idx, :]
                         else:
                             ims = fsrc[idx:idx+batch]
-                        #ims = fsrc[idx:idx+batch]
-                        print("ims shape", ims.shape)
-                        print("channel idx", channel_idx)
-                        print("idx", idx)
-                        print(fdest['fields'].shape)
                         fdest['fields'][idx:idx+batch,  channel_idx, :, :, :] = ims
                         idx+=batch
-                        ttot = time.time() - start
-                        eta = (end - base)/((idx - base)/ttot)
-                        hrs = eta//3600
-                        mins = (eta - 3600*hrs)//60
-                        secs = (eta - 3600*hrs - 60*mins)
+                        
     
-                ttot = time.time() - start
-                hrs = ttot//3600
-                mins = (ttot - 3600*hrs)//60
-                secs = (ttot - 3600*hrs - 60*mins)
                 channel_idx += 1 
 
 if __name__ == "__main__":

@@ -1,17 +1,17 @@
 #!/bin/bash
 #SBATCH --partition=accelerated
-#SBATCH --gres=gpu:4
-#SBATCH --time=12:00:00
-#SBATCH --nodes=16
-#SBATCH --ntasks-per-node=4
+#SBATCH --gres=gpu:1
+#SBATCH --time=1:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
 #SBATCH --account='hk-project-p0021348'
-#SBATCH --output='PanguLite-batch64-time.out'
-#SBATCH --job-name='PGL64'
+#SBATCH --output='test.out'
+#SBATCH --job-name='test'
 
 module purge # Unload all models.
 module load jupyter/tensorflow eccodes-2.30.2_i22_ompi40
 
-source ~/py39/bin/activate
+source ~/py39_pangu/bin/activate
 which python
 
 # Change 5-digit MASTER_PORT as you wish, SLURM will raise Error if duplicated with others.

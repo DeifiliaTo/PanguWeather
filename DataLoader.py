@@ -4,10 +4,27 @@ import numpy as np
 import torch
 
 
-def LoadConstantMask(
+def load_constant_mask(
     patch_size,
     folder_path="/home/hk-project-epais/ke4365/pangu-weather/constant_masks/",
 ):
+    """
+    Load the constant masks applied in the patch embedding layer.
+
+    patch_size: Tuple(int, int, int)
+        Number of pixels in (vert, lat, lon) dimensions per patch
+    folder_path: String
+        Path to directory containing constant masks
+
+    Returns
+    -------
+    land_mask: Tensor
+        of shape (n_lat, n_lon) after padding
+    soil_type: Tensor
+        of shape (n_lat, n_lon) after padding
+    topography: Tensor
+        of shape (n_lat, n_lon) after padding
+    """
     # Load data from numpy files
     data_files = [f for f in os.listdir(folder_path) if f.endswith(".npy")]
     data = {}
@@ -55,10 +72,27 @@ def LoadConstantMask(
     return land_mask, soil_type, topography
 
 
-def LoadConstantMask2D(
+def load_constant_mask_2d(
     patch_size,
     folder_path="/home/hk-project-epais/ke4365/pangu-weather/constant_masks/",
 ):
+    """
+    Load the constant masks applied in the patch embedding layer.
+
+    patch_size: Tuple(int, int)
+        Number of pixels in (lat, lon) dimensions per patch
+    folder_path: String
+        Path to directory containing constant masks
+
+    Returns
+    -------
+    land_mask: Tensor
+        of shape (n_lat, n_lon) after padding
+    soil_type: Tensor
+        of shape (n_lat, n_lon) after padding
+    topography: Tensor
+        of shape (n_lat, n_lon) after padding
+    """
     # Load data from numpy files
     data_files = [f for f in os.listdir(folder_path) if f.endswith(".npy")]
     data = {}
@@ -104,22 +138,3 @@ def LoadConstantMask2D(
     )
 
     return land_mask, soil_type, topography
-
-
-def LoadData(folder_path=""):
-    data_files = [f for f in os.listdir(folder_path) if f.endswith(".npy")]
-    data = {}
-    for file in data_files:
-        file_path = os.path.join(folder_path, file)
-        data[file] = np.load(file_path)
-    return data
-
-
-def LoadStatic(folder_path=""):
-    # Load static
-    data_files = [f for f in os.listdir(folder_path) if f.endswith(".npy")]
-    data = {}
-    for file in data_files:
-        file_path = os.path.join(folder_path, file)
-        data[file] = np.load(file_path)
-    return data
