@@ -275,12 +275,12 @@ def training_loop(params, device, slurm_localid, gpus_per_node):
 
 if __name__ == '__main__':
     params = {}
-    params['train_data_path'] =  '/lsdf/kit/imk-tro/projects/Gruppe_Quinting/ec.era5/1959-2023_01_10-wb13-6h-1440x721.zarr' # CHANGE TO YOUR DATA DIRECTORY
-    params['valid_data_path'] =  '/lsdf/kit/imk-tro/projects/Gruppe_Quinting/ec.era5/1959-2023_01_10-wb13-6h-1440x721.zarr' # CHANGE TO YOUR DATA DIRECTORY
+    params['train_data_path'] =  '/home/hk-project-epais/ke4365/downloadDataPlayground/era_subset.zarr'#/lsdf/kit/imk-tro/projects/Gruppe_Quinting/ec.era5/1959-2023_01_10-wb13-6h-1440x721.zarr' # CHANGE TO YOUR DATA DIRECTORY
+    params['valid_data_path'] =  '/home/hk-project-epais/ke4365/downloadDataPlayground/era_subset.zarr'#/lsdf/kit/imk-tro/projects/Gruppe_Quinting/ec.era5/1959-2023_01_10-wb13-6h-1440x721.zarr' # CHANGE TO YOUR DATA DIRECTORY
     params['pressure_static_data_path'] = 'constant_masks/pressure_zarr.npy' 
     params['surface_static_data_path'] =  'constant_masks/surface_zarr.npy'  
     params['dt'] = 24
-    params['num_data_workers'] = 2
+    params['num_data_workers'] = 2  # pyTorch parameter
     params['data_distributed'] = True
     params['filetype'] = 'zarr' # hdf5, netcdf, or zarr
     params['num_epochs'] = 5
@@ -334,7 +334,7 @@ if __name__ == '__main__':
         dist.broadcast_object_list(hash_key_list, src=0, group=group)
         hash_key = hash_key_list[0]
         params['hash'] = hash_key
-    else: # this is kind of a dummy thing...
+    else: 
         hash_key_list = [hash_key]
         dist.broadcast_object_list(hash_key_list, src=0, group=group)
     
@@ -387,6 +387,8 @@ if __name__ == '__main__':
         params['delta_T_divisor'] = 6 # Required for WeatherBench2 download with 6-hourly time resolution
     elif params['train_data_path'] == '/lsdf/kit/imk-tro/projects/Gruppe_Quinting/ec.era5/era5.zarr':
         params['delta_T_divisor'] = 1 # Required for WeatherBench2 download with hourly time resolution
+    else:
+        params['delta_T_divisor'] = 6 # Baseline assumption is 6-hourly subsampled data
 
     training_loop(params, device, slurm_localid, gpus_per_node)
     

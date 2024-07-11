@@ -139,11 +139,15 @@ class GetDataset(Dataset):
         self.deltaTDivisor = params['delta_T_divisor']
         self.forecast_length = forecast_length
         self._get_files_stats(file_path, daily=params['daily'], lite=params['Lite'], mode=self.mode)
-        #
+        
+        # If data is downloaded from weatherbench, the 6-hourly subsampled data is stored in the reverse pressure level order.
+        # Need to reverse so that the 0th presssure level is 1000 hPa, 1st is 925 hPa, etc.
         if params['train_data_path'] == '/lsdf/kit/imk-tro/projects/Gruppe_Quinting/ec.era5/1959-2023_01_10-wb13-6h-1440x721.zarr':
             self.level_ordering = range(13-1, -1, -1)
         elif params['train_data_path'] == '/lsdf/kit/imk-tro/projects/Gruppe_Quinting/ec.era5/era5.zarr':
             self.level_ordering = range(0, 13)
+        else: # baseline assuption is subsampled WB2 data
+            self.level_ordering = range(13-1, -1, -1)
 
         if params['filetype'] == 'hdf5':
             self.p_means = h5py.File(params['pressure_static_data_path'])
@@ -200,7 +204,6 @@ class GetDataset(Dataset):
             self.files_pressure = [None for _ in range(self.n_years)]
             self.files_surface  = [None for _ in range(self.n_years)]
         elif self.filetype == 'netcdf':
-            logging.info("Getting file stats from {}".format(self.files_paths_pressure[0]))
             ds = xr.open_dataset(self.files_paths_surface[0])
             #original image shape (before padding)
             self.img_shape_x = len(ds.lon) # 1440
