@@ -1,6 +1,6 @@
 import sys
 
-sys.path.append("/hkfs/work/workspace/scratch/ke4365-pangu/pangu-weather/networks/")
+sys.path.append("./networks/")
 import torch
 from Modules.Attention import EarthSpecificLayer2D
 from Modules.Embedding import PatchEmbedding2D, PatchRecovery2D
@@ -46,7 +46,21 @@ class PanguModel(nn.Module):
     self._output_layer = PatchRecovery2D(self.patch_size, dim=2*self.dim) # added patch size
     
   def forward(self, input, input_surface):
-    """Forward pass of 2D model."""
+    """
+    Forward pass of 2D Pangu-Lite model with absolute position bias.
+    
+    input: Tensor
+      of shape (n_batch,  n_fields*n_vert, n_lat, n_lon) 
+    input_surface: Tensor
+      of shape (n_batch, n_fields, n_lat, n_lon) 
+
+    Returns
+    -------
+    output: Tensor
+      of shape (n_batch,  n_fields*n_vert, n_lat, n_lon)
+    output_surface: Tensor
+      of shape (n_batch, n_fields, n_lat, n_lon) 
+    """
     # Embed the input fields into patches
 
     x = self._input_layer(input, input_surface)

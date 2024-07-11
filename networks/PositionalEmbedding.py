@@ -1,6 +1,6 @@
 import sys
 
-sys.path.append("/hkfs/work/workspace/scratch/ke4365-pangu/pangu-weather/networks/")
+sys.path.append("./networks/")
 import torch
 from Modules.Attention import EarthSpecificLayerNoBias
 from Modules.Embedding import PatchEmbedding, PatchRecovery
@@ -52,7 +52,21 @@ class PanguModel(nn.Module):
     self._output_layer = PatchRecovery(self.patch_size, dim=2*self.dim) # added patch size
     
   def forward(self, input, input_surface):
-    """Forward pass of positional embedding model."""
+    """
+    Forward pass of Pangu-Lite model with positional embedding.
+    
+    input: Tensor
+      of shape (n_batch,  n_fields, n_vert, n_lat, n_lon)
+    input_surface: Tensor
+      of shape (n_batch, n_fields, n_lat, n_lon) 
+    
+    Returns
+    -------
+    output: Tensor
+      of shape (n_batch,  n_fields, n_vert, n_lat, n_lon)
+    output_surface: Tensor
+      of shape (n_batch, n_fields, n_lat, n_lon) 
+    """
     # Embed the input fields into patches
 
     x = self._input_layer(input, input_surface)

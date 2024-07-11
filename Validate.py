@@ -135,10 +135,11 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     params = {}
+    # CHANGE TO DATA PATH
     params['train_data_path'] =  '/lsdf/kit/imk-tro/projects/Gruppe_Quinting/ec.era5/1959-2023_01_10-wb13-6h-1440x721.zarr'
     params['valid_data_path'] =  '/lsdf/kit/imk-tro/projects/Gruppe_Quinting/ec.era5/1959-2023_01_10-wb13-6h-1440x721.zarr'
-    params['pressure_static_data_path'] = '/hkfs/work/workspace/scratch/ke4365-pangu/PANGU_ERA5_data_v0/static/pressure_zarr.npy' 
-    params['surface_static_data_path'] =  '/hkfs/work/workspace/scratch/ke4365-pangu/PANGU_ERA5_data_v0/static/surface_zarr.npy'  
+    params['pressure_static_data_path'] = 'constant_masks/pressure_zarr.npy' 
+    params['surface_static_data_path'] =  'constant_masks/surface_zarr.npy'  
     params['dt'] = 24
     params['num_data_workers'] = 2
     params['data_distributed'] = True
@@ -151,8 +152,11 @@ if __name__ == '__main__':
     params['forecast_length'] = 5
 
     # Modify delta_T_divisor based on data path
+    # CHANGE TO YOUR DATA PATh
+    # Change to true if your data is subsampled 6-hourly
     if params['train_data_path'] == '/lsdf/kit/imk-tro/projects/Gruppe_Quinting/ec.era5/1959-2023_01_10-wb13-6h-1440x721.zarr':
         params['delta_T_divisor'] = 6
+    # Change to true if your data is sampled hourly
     elif params['train_data_path'] == '/lsdf/kit/imk-tro/projects/Gruppe_Quinting/ec.era5/era5.zarr':
         params['delta_T_divisor'] = 1
 
@@ -161,7 +165,6 @@ if __name__ == '__main__':
     params['path_to_model'] = args.path_to_model
 
     # Set seeds for reproducability
-    #torch.backends.cudnn.benchmark = True # This can allegedly improve computational time by ~20%.
     torch.manual_seed(1)
     torch.cuda.manual_seed(1)
     
@@ -170,16 +173,17 @@ if __name__ == '__main__':
     if rank == 0:
         print("Reading model from", params['model'])
 
-    # initialize patch size: currently, patch size is only (2, 8, 8) for PanguLite. PS is (2, 4, 4) for all other sizes.
+    # initialize patch size: currently, patch size is (2, 8, 8) for PanguLite. 
+    # Patch size is (2, 4, 4) for Pangu-Weather.
     if params['Lite']:
         params['patch_size'] = (2, 8, 8)
         params['batch_size'] = 6
-        params['lat_crop']   = (3, 4)
+        params['lat_crop']   = (3, 4) # Don't modify cropping if your original image resolution is 721x1440
         params['lon_crop']   = (0, 0)
     else:
         params['patch_size'] = (2, 4, 4)
         params['batch_size'] = 2
-        params['lat_crop']   = (1, 2)
+        params['lat_crop']   = (1, 2) # Don't modify cropping if your original image resolution is 721x1440
         params['lon_crop']   = (0, 0)
 
     validation(params, device, slurm_localid, gpus_per_node)

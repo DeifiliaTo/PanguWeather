@@ -53,16 +53,16 @@ def get_loss(model, data_loader, device, loss1, loss2, lat_crop, lon_crop, world
     """
     loss = torch.zeros(1).to(device)
 
-    static_plevel = np.load('/hkfs/work/workspace/scratch/ke4365-pangu/PANGU_ERA5_data_v0/static/pressure_zarr.npy')
+    static_plevel = np.load('constant_masks/pressure_zarr.npy')
     mean_plevel   = torch.tensor(static_plevel[0].reshape(1, 5, 13, 1, 1)).to(device)
     std_plevel    = torch.tensor(static_plevel[1].reshape(1, 5, 13, 1, 1)).to(device)
 
-    static_slevel = np.load('/hkfs/work/workspace/scratch/ke4365-pangu/PANGU_ERA5_data_v0/static/surface_zarr.npy')
+    static_slevel = np.load('constant_masks/surface_zarr.npy')
     mean_slevel   = torch.tensor(static_slevel[0].reshape(1, 4, 1, 1)).to(device)
     std_slevel    = torch.tensor(static_slevel[1].reshape(1, 4, 1, 1)).to(device)
 
-    climatology_plevel = torch.tensor(np.load('/hkfs/work/workspace/scratch/ke4365-pangu/PANGU_ERA5_data_v0/static/climatology/pressure/pressure_climatology.npy')).to(device)
-    climatology_slevel = torch.tensor(np.load('/hkfs/work/workspace/scratch/ke4365-pangu/PANGU_ERA5_data_v0/static/climatology/surface/surface_climatology.npy')).to(device)
+    climatology_plevel = torch.tensor(np.load('constant_masks/pressure_climatology.npy')).to(device)
+    climatology_slevel = torch.tensor(np.load('constant_masks/surface_climatology.npy')).to(device)
 
     climatology_plevel = climatology_plevel - mean_plevel
     climatology_slevel = climatology_slevel - mean_slevel
@@ -211,16 +211,16 @@ def get_validation_loss(model, data_loader, device, lat_crop, lon_crop, world_si
     """
     loss = 0
     
-    static_plevel = np.load('/hkfs/work/workspace/scratch/ke4365-pangu/PANGU_ERA5_data_v0/static/pressure_zarr.npy')
+    static_plevel = np.load('constant_masks/pressure_zarr.npy')
     mean_plevel   = torch.tensor(static_plevel[0].reshape(1, 5, 13, 1, 1)).to(device)
     std_plevel    = torch.tensor(static_plevel[1].reshape(1, 5, 13, 1, 1)).to(device)
 
-    static_slevel = np.load('/hkfs/work/workspace/scratch/ke4365-pangu/PANGU_ERA5_data_v0/static/surface_zarr.npy')
+    static_slevel = np.load('constant_masks/surface_zarr.npy')
     mean_slevel   = torch.tensor(static_slevel[0].reshape(1, 4, 1, 1)).to(device)
     std_slevel    = torch.tensor(static_slevel[1].reshape(1, 4, 1, 1)).to(device)
 
-    climatology_plevel = torch.tensor(np.load('/hkfs/work/workspace/scratch/ke4365-pangu/PANGU_ERA5_data_v0/static/climatology/pressure/pressure_climatology.npy')).to(device)
-    climatology_slevel = torch.tensor(np.load('/hkfs/work/workspace/scratch/ke4365-pangu/PANGU_ERA5_data_v0/static/climatology/surface/surface_climatology.npy')).to(device)
+    climatology_plevel = torch.tensor(np.load('constant_masks/pressure_climatology.npy')).to(device)
+    climatology_slevel = torch.tensor(np.load('constant_masks/surface_climatology.npy')).to(device)
 
     climatology_plevel = climatology_plevel - mean_plevel
     climatology_slevel = climatology_slevel - mean_slevel

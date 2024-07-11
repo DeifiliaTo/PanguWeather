@@ -6,16 +6,16 @@ import xarray as xr
 iterations = 10
 n_per_iteration = 200
 n_random = iterations * n_per_iteration
+# CHANGE TO YOUR DATA DIRECTORY
 data_dir = '/lsdf/kit/imk-tro/projects/Gruppe_Quinting/ec.era5/1959-2023_01_10-wb13-6h-1440x721.zarr/'
 zarr_data = xr.open_dataset(data_dir, engine='zarr')
 random_index_total = random.sample(range(len(zarr_data['time'])), n_random)
 
 # file names
-output_dir_pressure = '/hkfs/work/workspace/scratch/ke4365-pangu/PANGU_ERA5_data_v0/static/climatology/pressure/'  
-output_dir_surface  = '/hkfs/work/workspace/scratch/ke4365-pangu/PANGU_ERA5_data_v0/static/climatology/surface/' 
+output_dir_pressure = '../constant_masks/'  
+output_dir_surface  = '../constant_masks/' 
 
 for iter in range(iterations):
-    print("Iteration", iter)
     random_index = random_index_total[iter*n_per_iteration:(iter+1)*(n_per_iteration)]
     data_sample = zarr_data.isel(time=random_index,level=slice(None, None, -1))
 
@@ -42,7 +42,6 @@ for iter in range(iterations):
     np.save(output_file_surface, sample_surface_mean)
     print(f"Output of surface values saved in {output_file_surface}")
 
-print("Calculating overall mean")
 baseline_pressure = np.load(output_dir_pressure + 'pressure_zarr_' + str(0) + '.npy')
 baseline_surface  = np.load(output_dir_surface + 'surface_zarr_' + str(0) + '.npy')
 
@@ -54,8 +53,8 @@ for iter in range(1, iterations):
     baseline_pressure += np.load(output_file_pressure)
     baseline_surface  += np.load(output_file_surface)
 
-baseline_pressure /= iterations
-baseline_surface  /= iterations
+baseline_pressure = baseline_pressure / iterations
+baseline_surface  = baseline_surface  / iterations
 
 np.save(output_dir_pressure + 'pressure_climatology.npy', baseline_pressure)
 np.save(output_dir_surface  + 'surface_climatology.npy', baseline_surface)

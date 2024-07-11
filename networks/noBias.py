@@ -1,6 +1,6 @@
 import sys
 
-sys.path.append("/hkfs/work/workspace/scratch/ke4365-pangu/pangu-weather/networks/")
+sys.path.append("./networks/")
 
 import torch
 from Modules.Attention import EarthSpecificLayerNoBias

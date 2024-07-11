@@ -3,6 +3,7 @@ import random
 import numpy as np
 import xarray as xr
 
+# CHANGE TO YOUR DATA DIRECTORY
 data_dir = '/lsdf/kit/imk-tro/projects/Gruppe_Quinting/ec.era5/1959-2023_01_10-wb13-6h-1440x721.zarr/'
 n_random = 200
 zarr_data = xr.open_dataset(data_dir, engine='zarr')
@@ -24,6 +25,7 @@ sample_surface_mean = np.mean(sample_surface, axis=(0, 2, 3)).reshape(4, 1, 1)
 sample_surface_std  = np.std(sample_surface, axis=(0, 2, 3)).reshape(4, 1, 1)
 
 # Save the results
+# CHANGE TO YOUR OUTPUT DIRECTORY
 output_file = '/hkfs/work/workspace/scratch/ke4365-pangu/PANGU_ERA5_data_v0/static/pressure_zarr.npy'
 np.save(output_file, np.stack([sample_pressure_mean, sample_pressure_std]))
 print(f"Output of pressure levels saved in {output_file}")

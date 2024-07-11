@@ -189,22 +189,15 @@ def training_loop(params, device, slurm_localid, gpus_per_node):
 
                 # We use the MAE loss to train the model
                 # The weight of surface loss is 0.25
-                # Different weight can be applied for different fields if needed
+                # Different weights can be applied for different fields if needed
                 output, output_surface = output * pressure_weights, output_surface * surface_weights
                 target, target_surface = target * pressure_weights, target_surface * surface_weights
                 loss = 1 * loss1(output, target) + 0.25 * loss2(output_surface, target_surface)
             torch.cuda.empty_cache()
             scaler.scale(loss).backward()
-            # Call the backward algorithm and calcula the gradient of parameters
+            # Call the backward algorithm and calculate the gradient of parameters
             scaler.step(optimizer)
             scaler.update()
-            
-            
-                
-            # Update model parameters with Adam optimizer
-            # The learning rate is 5e-4 as in the paper, while the weight decay is 3e-6
-            
-            #print(optimizer.param_groups)
             
             dist.all_reduce(loss) # Allreduce rank-local mini-batch losses.
             
@@ -275,11 +268,6 @@ def training_loop(params, device, slurm_localid, gpus_per_node):
                 print(f'| Total samples: {total_samples :.3f}')
                 print(f'| Learning Rate: {lr :.7f}')
 
-                #if early_stopping > 7:
-                #    print(f"Stopping at epoch {epoch:03d} due to early stopping")
-                #    break
-            #torch.distributed.barrier()
-            #scheduler.step(val_loss[0])
             scheduler.step(epoch+1)
                     
     # How can we verify that at least one model will be saved? Currently only saves when in case of the best validation loss
@@ -287,10 +275,10 @@ def training_loop(params, device, slurm_localid, gpus_per_node):
 
 if __name__ == '__main__':
     params = {}
-    params['train_data_path'] =  '/lsdf/kit/imk-tro/projects/Gruppe_Quinting/ec.era5/1959-2023_01_10-wb13-6h-1440x721.zarr'
-    params['valid_data_path'] =  '/lsdf/kit/imk-tro/projects/Gruppe_Quinting/ec.era5/1959-2023_01_10-wb13-6h-1440x721.zarr'
-    params['pressure_static_data_path'] = '/hkfs/work/workspace/scratch/ke4365-pangu/PANGU_ERA5_data_v0/static/pressure_zarr.npy' 
-    params['surface_static_data_path'] =  '/hkfs/work/workspace/scratch/ke4365-pangu/PANGU_ERA5_data_v0/static/surface_zarr.npy'  
+    params['train_data_path'] =  '/lsdf/kit/imk-tro/projects/Gruppe_Quinting/ec.era5/1959-2023_01_10-wb13-6h-1440x721.zarr' # CHANGE TO YOUR DATA DIRECTORY
+    params['valid_data_path'] =  '/lsdf/kit/imk-tro/projects/Gruppe_Quinting/ec.era5/1959-2023_01_10-wb13-6h-1440x721.zarr' # CHANGE TO YOUR DATA DIRECTORY
+    params['pressure_static_data_path'] = 'constant_masks/pressure_zarr.npy' 
+    params['surface_static_data_path'] =  'constant_masks/surface_zarr.npy'  
     params['dt'] = 24
     params['num_data_workers'] = 2
     params['data_distributed'] = True
@@ -317,11 +305,11 @@ if __name__ == '__main__':
     # positionEmbedding     = absolute position embedding
 
     # Save directory
-    base_save_dir = '/hkfs/work/workspace/scratch/ke4365-pangu/pangu-weather/trained_models/test/'
+    # CHANGE TO YOUR OUTPUT SAVE DIRECTORY
+    base_save_dir = 'trained_models/test/'
         
     
     # Set seeds for reproducability
-    #torch.backends.cudnn.benchmark = True # This can allegedly improve computational time by ~20%.
     torch.manual_seed(1)
     torch.cuda.manual_seed(1)
     
@@ -378,26 +366,27 @@ if __name__ == '__main__':
             with open(params['save_dir'][params['model']] + "params_" + hash_key + '.json', 'w') as params_file:
                 json.dump(params, params_file)
         
-    # initialize patch size: currently, patch size is only (2, 8, 8) for PanguLite. PS is (2, 4, 4) for all other sizes.
+    # initialize patch size: currently, patch size is only (2, 8, 8) for PanguLite.
+    # patch size is (2, 4, 4) for all other sizes.
     if params['Lite']:
         params['patch_size'] = (2, 8, 8)
         if params['model'] == '2D' or params['model'] == '2Dim192':
             params['batch_size'] = 1
         else:
             params['batch_size'] = 1
-        params['lat_crop']   = (3, 4)
-        params['lon_crop']   = (0, 0)
+        params['lat_crop']   = (3, 4) # Do not change if input image size of (721, 1440)
+        params['lon_crop']   = (0, 0) # Do not change if input image size of (721, 1440)
     else:
         params['patch_size'] = (2, 4, 4)
         params['batch_size'] = 1
-        params['lat_crop']   = (1, 2)
-        params['lon_crop']   = (0, 0)
+        params['lat_crop']   = (1, 2) # Do not change if input image size of (721, 1440)
+        params['lon_crop']   = (0, 0) # Do not change if input image size of (721, 1440)
 
+    # CHANGE TO YOUR DATA DIRECTORY
     if params['train_data_path'] == '/lsdf/kit/imk-tro/projects/Gruppe_Quinting/ec.era5/1959-2023_01_10-wb13-6h-1440x721.zarr':
-        params['delta_T_divisor'] = 6
+        params['delta_T_divisor'] = 6 # Required for WeatherBench2 download with 6-hourly time resolution
     elif params['train_data_path'] == '/lsdf/kit/imk-tro/projects/Gruppe_Quinting/ec.era5/era5.zarr':
-        params['delta_T_divisor'] = 1
-#    if params['']
+        params['delta_T_divisor'] = 1 # Required for WeatherBench2 download with hourly time resolution
 
     training_loop(params, device, slurm_localid, gpus_per_node)
     
