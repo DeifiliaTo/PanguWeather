@@ -84,8 +84,8 @@ def training_loop(params, device, slurm_localid, gpus_per_node):
     two_dimensional = False
     if params['model'] == '2D' or params['model'] == '2Dim192':
         two_dimensional = True
-    train_data_loader, train_dataset, train_sampler = get_data_loader(params, params['train_data_path'], dist.is_initialized(), mode='train', device=device, patch_size=params['patch_size'], subset_size=params['subset_size'], two_dimensional=two_dimensional)
-    valid_data_loader, valid_dataset = get_data_loader(params, params['valid_data_path'], dist.is_initialized(), mode='validation', device=device, patch_size=params['patch_size'], subset_size=params['validation_subset_size'], two_dimensional=two_dimensional)
+    train_data_loader = get_data_loader(params, params['train_data_path'], dist.is_initialized(), mode='train', device=device, patch_size=params['patch_size'], subset_size=params['subset_size'], two_dimensional=two_dimensional)
+    valid_data_loader = get_data_loader(params, params['valid_data_path'], dist.is_initialized(), mode='validation', device=device, patch_size=params['patch_size'], subset_size=params['validation_subset_size'], two_dimensional=two_dimensional)
 
     if params['model'] == 'pangu':
         model = PanguModel(device=device, dim=dim, patch_size=params['patch_size'])
@@ -287,8 +287,8 @@ if __name__ == '__main__':
     params = {}
     params['train_data_path'] =  '/lsdf/kit/imk-tro/projects/Gruppe_Quinting/ec.era5/1959-2023_01_10-wb13-6h-1440x721.zarr'
     params['valid_data_path'] =  '/lsdf/kit/imk-tro/projects/Gruppe_Quinting/ec.era5/1959-2023_01_10-wb13-6h-1440x721.zarr'
-    params['pressure_static_data_path'] = '/hkfs/work/workspace/scratch/ke4365-pangu/PANGU_ERA5_data_v0/static/pressure_zarr.npy' 
-    params['surface_static_data_path'] =  '/hkfs/work/workspace/scratch/ke4365-pangu/PANGU_ERA5_data_v0/static/surface_zarr.npy'  
+    params['pressure_static_data_path'] = 'constant_masks/pressure_zarr.npy' 
+    params['surface_static_data_path'] =  'constant_masks/surface_zarr.npy'  
     params['dt'] = 24
     params['num_data_workers'] = 2
     params['data_distributed'] = True
@@ -316,7 +316,7 @@ if __name__ == '__main__':
     # positionEmbedding     = absolute position embedding
 
     # Save directory
-    base_save_dir = '/hkfs/work/workspace/scratch/ke4365-pangu/pangu-weather/loss_schedule_exp/trained_models/'
+    base_save_dir = 'loss_schedule_exp/trained_models/'
         
     
     # Set seeds for reproducability

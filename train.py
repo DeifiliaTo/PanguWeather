@@ -2,6 +2,7 @@ import datetime
 import json
 import os
 import time
+import logging
 
 import torch
 import torch.distributed as dist
@@ -21,69 +22,57 @@ from networks.Three_layers import PanguModel as ThreeLayerModel
 from networks.TwoDimensional import PanguModel as TwoDimPosEmb
 from utils.data_loader_multifiles import get_data_loader
 
+def set_all_seeds(seed):
+    os.environ["PL_GLOBAL_SEED"] = str(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
-def init_distributed(params):
+
+def init_distributed():
     """
-    Initialize DistributedDataParallel or set to CPU.
-    
-    params: Dict
-        dictionary specifying run parameters
+    Initialize DistributedDataParallel 
     
     Returns
     -------
     device: String
     slurm_localid: int
-    gpus_per_node: int
     rank: int
     world_size: int
     """
     rank = int(os.getenv("SLURM_PROCID"))       # Get individual process ID.
     world_size = int(os.getenv("SLURM_NTASKS")) # Get overall number of processes.
-    slurm_job_gpus = os.getenv("SLURM_JOB_GPUS")
     slurm_localid = int(os.getenv("SLURM_LOCALID"))
-    gpus_per_node = torch.cuda.device_count()
-
 
     # Initialize GPUs and dataloaders
-    if slurm_job_gpus is not None:
-        gpu = rank % gpus_per_node
-        assert gpu == slurm_localid
-        device = f"cuda:{slurm_localid}"
-        torch.cuda.set_device(device)
-        # Initialize DistributedDataParallel.
-        if params['data_distributed']:
-            dist.init_process_group(backend="nccl", rank=rank, world_size=world_size, init_method="env://")
-    else:
-        # Initialize DistributedDataParallel.
-        if params['data_distributed']:
-            dist.init_process_group(backend="gloo", rank=rank, world_size=world_size, init_method="env://")
-        # set device to CPU
-        device = 'cpu'
-
+    device = f"cuda:{slurm_localid}"
+    torch.cuda.set_device(slurm_localid)
+    
+    # Initialize DistributedDataParallel.
+    dist.init_process_group(backend="nccl", rank=rank, world_size=world_size, init_method="env://")
+    
     if dist.is_initialized(): 
         print(f"Rank {rank}/{world_size}: Process group initialized with torch rank {torch.distributed.get_rank()} and torch world size {torch.distributed.get_world_size()}.")
-    else:
-        print("Running in serial")
+    
+    return device, slurm_localid, rank, world_size
 
-    return device, slurm_localid, gpus_per_node, rank, world_size
-
-def training_loop(params, device, slurm_localid, gpus_per_node):
+def training_loop(params, device, slurm_localid):
     """
     train the model.
 
     params: Dict
     device: String
     slurm_localid: int
-    gpus_per_node: int
     """
     # Define patch size, data loader, model
     dim          = params['C']
     two_dimensional = False
-    if params['model'] == '2D' or params['model'] == '2Dim192' or params['model'] == '2DPosEmb' or params['model'] == '2DPosEmbLite':
+    if params['model'] == '2D' or params['model'] == '2Dim192' or params['model'] == '2DPosEmb' or params['0odel'] == '2DPosEmbLite':
         two_dimensional = True
-    train_data_loader, train_dataset, train_sampler = get_data_loader(params, params['train_data_path'], dist.is_initialized(), mode='train', device=device, patch_size=params['patch_size'], subset_size=params['subset_size'], two_dimensional=two_dimensional)
-    valid_data_loader, valid_dataset = get_data_loader(params, params['valid_data_path'], dist.is_initialized(), mode='validation', device=device, patch_size=params['patch_size'], subset_size=params['validation_subset_size'], two_dimensional=two_dimensional)
+        params['patch_size'] = params['patch_size'][-2:] # Patch size should 2 values
+    train_data_loader = get_data_loader(params, params['train_data_path'], dist.is_initialized(), mode='train', patch_size=params['patch_size'], subset_size=params['subset_size'], two_dimensional=two_dimensional)
+    valid_data_loader = get_data_loader(params, params['valid_data_path'], dist.is_initialized(), mode='validation', patch_size=params['patch_size'], subset_size=params['validation_subset_size'], two_dimensional=two_dimensional)
 
+    # Initialize model based on key
     if params['model'] == 'pangu':
         model = PanguModel(device=device, dim=dim, patch_size=params['patch_size'])
     elif params['model'] == 'panguLite':
@@ -93,42 +82,32 @@ def training_loop(params, device, slurm_localid, gpus_per_node):
     elif params['model'] == 'noBiasLite':
         model = NoBiasModel(device=device, dim=dim, patch_size=params['patch_size'])
     elif params['model'] == '2D':
-        model = PanguLite2D(device=device, dim=int(1.5*dim), patch_size=params['patch_size'][1:])
+        model = PanguLite2D(device=device, dim=int(1.5*dim), patch_size=params['patch_size'])
     elif params['model'] == 'threeLayer':
         model = ThreeLayerModel(device=device, dim=dim, patch_size=params['patch_size'])
     elif params['model'] == 'positionEmbedding':
         model = PositionalEmbedding(device=device, dim=dim, patch_size=params['patch_size'])
     elif params['model'] == '2DPosEmb':
-        model = TwoDimPosEmb(device=device, dim=int(1.5*dim), patch_size=params['patch_size'][1:])
+        model = TwoDimPosEmb(device=device, dim=int(1.5*dim), patch_size=params['patch_size'])
     elif params['model'] == '2DPosEmbLite':
-        model = TwoDimPosEmbLite(device=device, dim=int(1.5*dim), patch_size=params['patch_size'][1:])
+        model = TwoDimPosEmbLite(device=device, dim=int(1.5*dim), patch_size=params['patch_size'])
     elif params['model'] == '2Dim192':
-        model = PanguLite2D(device=device, dim=int(dim), patch_size=params['patch_size'][1:])
+        model = PanguLite2D(device=device, dim=int(dim), patch_size=params['patch_size'])
     else: 
         raise NotImplementedError(params['model'] + ' model does not exist.')
 
     model = model.to(torch.float32).to(device)
 
-    # DistributedDataParallel wrapper if GPUs are available
-    if dist.is_initialized() and gpus_per_node > 0:
-        model = DistributedDataParallel( # Wrap model with DistributedDataParallel.
-                model, 
-                device_ids=[slurm_localid], 
-                output_device=slurm_localid,
-                find_unused_parameters=False
-        )
+    # DistributedDataParallel wrapper
+    model = DistributedDataParallel(
+            model, 
+            device_ids=[slurm_localid], 
+            output_device=slurm_localid
+    )
     
     optimizer = torch.optim.Adam(model.parameters(), lr=5e-4, weight_decay=3e-6)
-    #scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=7)
     scheduler = CosineLRScheduler(optimizer, t_initial=params['num_epochs'], warmup_t=5, warmup_lr_init=1e-5)
-
-    if dist.is_initialized():
-        rank = dist.get_rank()
-        world_size = dist.get_world_size()
-    else:
-        rank = 0
-        world_size = 1
-
+        
     if params['restart']:
         if rank == 0:
             print("params['save_dir'][params['model']]", params['save_dir'][params['model']] + str(params['save_counter']))
@@ -161,6 +140,7 @@ def training_loop(params, device, slurm_localid, gpus_per_node):
     scaler = GradScaler()
 
     early_stopping = 0 # tracks how many epochs have passed since the validation loss has improved
+    num_epochs = params['num_epochs']
 
     for epoch in range(start_epoch, start_epoch + num_epochs):
         if rank == 0 and epoch == start_epoch:
@@ -169,7 +149,7 @@ def training_loop(params, device, slurm_localid, gpus_per_node):
         start_epoch_time = time.perf_counter()
         model.train()
         
-        train_sampler.set_epoch(epoch)
+        train_data_loader.sampler.set_epoch(epoch)
         epoch_average_loss = 0
         loss = 0
         for i, data in enumerate(train_data_loader):        # Load weather data at time t as the input; load weather data at time t+1/3/6/24 as the output
@@ -241,7 +221,7 @@ def training_loop(params, device, slurm_localid, gpus_per_node):
                 else:
                     early_stopping += 1
                 
-                lr = optimizer.param_groups[0]['lr'] # write to variable so that we can print...
+                lr = optimizer.param_groups[0]['lr'] # write to variable so that we can print
 
                 print(f'Epoch Average: {int(epoch)+1:03d}/{int(num_epochs):03d} ')
                 print(f'| Mean L1 Training Loss: {epoch_average_loss :.5f} ')
@@ -269,24 +249,19 @@ def training_loop(params, device, slurm_localid, gpus_per_node):
                 print(f'| Learning Rate: {lr :.7f}')
 
             scheduler.step(epoch+1)
-                    
-    # How can we verify that at least one model will be saved? Currently only saves when in case of the best validation loss
-    dist.destroy_process_group()
 
 if __name__ == '__main__':
     params = {}
-    params['train_data_path'] =  '/home/hk-project-epais/ke4365/downloadDataPlayground/era_subset.zarr'#/lsdf/kit/imk-tro/projects/Gruppe_Quinting/ec.era5/1959-2023_01_10-wb13-6h-1440x721.zarr' # CHANGE TO YOUR DATA DIRECTORY
-    params['valid_data_path'] =  '/home/hk-project-epais/ke4365/downloadDataPlayground/era_subset.zarr'#/lsdf/kit/imk-tro/projects/Gruppe_Quinting/ec.era5/1959-2023_01_10-wb13-6h-1440x721.zarr' # CHANGE TO YOUR DATA DIRECTORY
+    params['train_data_path'] =  'era_subset.zarr' # CHANGE TO YOUR DATA DIRECTORY
+    params['valid_data_path'] =  'era_subset.zarr' # CHANGE TO YOUR DATA DIRECTORY
     params['pressure_static_data_path'] = 'constant_masks/pressure_zarr.npy' 
     params['surface_static_data_path'] =  'constant_masks/surface_zarr.npy'  
     params['dt'] = 24
-    params['num_data_workers'] = 2  # pyTorch parameter
     params['data_distributed'] = True
     params['filetype'] = 'zarr' # hdf5, netcdf, or zarr
     params['num_epochs'] = 5
-    num_epochs = params['num_epochs']
     params['C'] = 192
-    params['subset_size'] = 8
+    params['subset_size'] = 16
     params['validation_subset_size'] = 6
     params['restart'] = False
     params['hash'] = "20240522_295466069"
@@ -295,7 +270,7 @@ if __name__ == '__main__':
     params['save_counter'] = 51 # 56# 61 #  100
 
     # Specify model
-    params['model'] = 'panguLite'
+    params['model'] = '2D'
     # pangu        = full run
     # panguLite    = light model
     # relativeBias = relative bias
@@ -309,11 +284,10 @@ if __name__ == '__main__':
     base_save_dir = 'trained_models/test/'
         
     
-    # Set seeds for reproducability
-    torch.manual_seed(1)
-    torch.cuda.manual_seed(1)
+    # Set seeds for reproducibility
+    set_all_seeds(1)
     
-    device, slurm_localid, gpus_per_node, rank, world_size = init_distributed(params)
+    device, slurm_localid, rank, world_size = init_distributed()
 
     hash_key = params['hash']
     group = dist.new_group(list(range(world_size)))
@@ -353,7 +327,7 @@ if __name__ == '__main__':
     }
             
     if rank == 0:
-        print("Model will be saved in", params['save_dir'][params['model']])
+        logging.info("Model will be saved in", params['save_dir'][params['model']])
 
         # If starting a new run
         if not params['restart']:
@@ -382,13 +356,15 @@ if __name__ == '__main__':
         params['lat_crop']   = (1, 2) # Do not change if input image size of (721, 1440)
         params['lon_crop']   = (0, 0) # Do not change if input image size of (721, 1440)
 
-    # CHANGE TO YOUR DATA DIRECTORY
+    # CHANGE TO YOUR DATA DIRECTORIES
     if params['train_data_path'] == '/lsdf/kit/imk-tro/projects/Gruppe_Quinting/ec.era5/1959-2023_01_10-wb13-6h-1440x721.zarr':
         params['delta_T_divisor'] = 6 # Required for WeatherBench2 download with 6-hourly time resolution
     elif params['train_data_path'] == '/lsdf/kit/imk-tro/projects/Gruppe_Quinting/ec.era5/era5.zarr':
         params['delta_T_divisor'] = 1 # Required for WeatherBench2 download with hourly time resolution
     else:
-        params['delta_T_divisor'] = 6 # Baseline assumption is 6-hourly subsampled data
+        params['delta_T_divisor'] = 6 # Baseline assumption is 6-hourly subsampled data. 
 
-    training_loop(params, device, slurm_localid, gpus_per_node)
+    training_loop(params, device, slurm_localid)
+                        
+    dist.destroy_process_group()
     

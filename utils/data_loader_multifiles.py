@@ -1,49 +1,3 @@
-#BSD 3-Clause License
-#
-#Copyright (c) 2022, FourCastNet authors
-#All rights reserved.
-#
-#Redistribution and use in source and binary forms, with or without
-#modification, are permitted provided that the following conditions are met:
-#
-#1. Redistributions of source code must retain the above copyright notice, this
-#   list of conditions and the following disclaimer.
-#
-#2. Redistributions in binary form must reproduce the above copyright notice,
-#   this list of conditions and the following disclaimer in the documentation
-#   and/or other materials provided with the distribution.
-#
-#3. Neither the name of the copyright holder nor the names of its
-#   contributors may be used to endorse or promote products derived from
-#   this software without specific prior written permission.
-#
-#THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-#AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-#IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-#DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-#FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-#DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-#SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-#CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-#OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-#OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-#
-#The code was authored by the following people:
-#
-#Jaideep Pathak - NVIDIA Corporation
-#Shashank Subramanian - NERSC, Lawrence Berkeley National Laboratory
-#Peter Harrington - NERSC, Lawrence Berkeley National Laboratory
-#Sanjeev Raja - NERSC, Lawrence Berkeley National Laboratory 
-#Ashesh Chattopadhyay - Rice University 
-#Morteza Mardani - NVIDIA Corporation 
-#Thorsten Kurth - NVIDIA Corporation 
-#David Hall - NVIDIA Corporation 
-#Zongyi Li - California Institute of Technology, NVIDIA Corporation 
-#Kamyar Azizzadenesheli - Purdue University 
-#Pedram Hassanzadeh - Rice University 
-#Karthik Kashinath - NVIDIA Corporation 
-#Animashree Anandkumar - California Institute of Technology, NVIDIA Corporation
-
 import glob
 import logging
 
@@ -55,14 +9,7 @@ import xarray as xr
 from torch.utils.data import DataLoader, Dataset, Subset
 from torch.utils.data.distributed import DistributedSampler
 
-#import cv2
-
-# params: dictionary
-# files_pattern: train_data_path
-# distributed: = dist.is_initialized() = True/False from the environment
-# train = True/False boolean
-
-def get_data_loader(params, file_path, distributed, mode, device, patch_size, subset_size=None, forecast_length=1, two_dimensional=False):
+def get_data_loader(params, file_path, distributed, mode, patch_size, subset_size=None, forecast_length=1, two_dimensional=False):
     """
     Return data loader for 2 or 3D dataset.
     
@@ -85,11 +32,10 @@ def get_data_loader(params, file_path, distributed, mode, device, patch_size, su
 
     """
     if not two_dimensional:
-        dataset = GetDataset(params, file_path, mode, device, patch_size, forecast_length=forecast_length)
+        dataset = PanguDataset(params, file_path, mode, patch_size, forecast_length=forecast_length)
     else:
-        dataset = Get2DDataset(params, file_path, mode, device, patch_size, forecast_length=forecast_length)
+        dataset = Pangu2DDataset(params, file_path, mode, patch_size, forecast_length=forecast_length)
 
-    
     # If we are setting a subset
     if subset_size is not None:
         subset_indices = torch.randperm(len(dataset))[:subset_size]
@@ -98,21 +44,17 @@ def get_data_loader(params, file_path, distributed, mode, device, patch_size, su
     
     dataloader = DataLoader(dataset,
                             batch_size=int(params['batch_size']),
-                            num_workers=params['num_data_workers'],
                             shuffle=(sampler is None),
                             sampler=sampler,
                             drop_last=False,
                             pin_memory=torch.cuda.is_available())
 
-    if mode == 'train':
-        return dataloader, dataset, sampler
-    else:
-        return dataloader, dataset
+    return dataloader
 
-class GetDataset(Dataset):
+class PanguDataset(Dataset):
     """Define 3D dataset."""
     
-    def __init__(self, params, file_path, mode, device, patch_size, forecast_length=1):
+    def __init__(self, params, file_path, mode, patch_size, forecast_length=1):
         """
         initialize.
 
@@ -129,7 +71,7 @@ class GetDataset(Dataset):
         patch_size: Tuple(int, int, Optional[int])
             Number of pixels in ([vert], lat, lon) dimensions per patch
         forecast_length: int
-            For training, always 1. For validation, defines the number of autoregressive steps to roll-out to.
+            For training, always 1. For validation, defines the number of autoregressive steps to roll out to.
         """
         self.params = params
         self.file_path = file_path
@@ -138,7 +80,7 @@ class GetDataset(Dataset):
         self.filetype = params['filetype']
         self.deltaTDivisor = params['delta_T_divisor']
         self.forecast_length = forecast_length
-        self._get_files_stats(file_path, daily=params['daily'], lite=params['Lite'], mode=self.mode)
+        self._get_files_stats(file_path, lite=params['Lite'], mode=self.mode)
         
         # If data is downloaded from weatherbench, the 6-hourly subsampled data is stored in the reverse pressure level order.
         # Need to reverse so that the 0th presssure level is 1000 hPa, 1st is 925 hPa, etc.
@@ -149,29 +91,19 @@ class GetDataset(Dataset):
         else: # baseline assuption is subsampled WB2 data
             self.level_ordering = range(13-1, -1, -1)
 
-        if params['filetype'] == 'hdf5':
-            self.p_means = h5py.File(params['pressure_static_data_path'])
-            self.s_means = h5py.File(params['surface_static_data_path'])
-        elif params['filetype'] == 'netcdf':
-            self.p_mean = np.load(params['pressure_static_data_path'])[0].reshape(5, 13, 1, 1)
-            self.p_std  = np.load(params['pressure_static_data_path'])[1].reshape(5, 13, 1, 1)
-            self.s_mean = np.load(params['surface_static_data_path'])[0].reshape(4, 1, 1)
-            self.s_std  = np.load(params['surface_static_data_path'])[1].reshape(4, 1, 1)
-        elif params['filetype'] == 'zarr':
-            self.p_mean = np.load(params['pressure_static_data_path'])[0].reshape(5, 13, 1, 1)
-            self.p_std  = np.load(params['pressure_static_data_path'])[1].reshape(5, 13, 1, 1)
-            self.s_mean = np.load(params['surface_static_data_path'])[0].reshape(4, 1, 1)
-            self.s_std  = np.load(params['surface_static_data_path'])[1].reshape(4, 1, 1)
-        else:
-            raise ValueError("File type must be hdf5, netcdf or zarr.")
+
+        self.p_mean = np.load(params['pressure_static_data_path'], allow_pickle=True)[0].reshape(5, 13, 1, 1)
+        self.p_std  = np.load(params['pressure_static_data_path'], allow_pickle=True)[1].reshape(5, 13, 1, 1)
+        self.s_mean = np.load(params['surface_static_data_path'], allow_pickle=True)[0].reshape(4, 1, 1)
+        self.s_std  = np.load(params['surface_static_data_path'], allow_pickle=True)[1].reshape(4, 1, 1)
         self.patch_size = patch_size
-        self.device = device
+        
         if "normalize" in params.keys():
             self.normalize = params.normalize
         else:
             self.normalize = True #by default turn on normalization if not specified in config
 
-    def _get_files_stats(self, file_path, dt=6, daily=False, lite=False, mode='train'):
+    def _get_files_stats(self, file_path, lite=False, mode='train'):
         """Filter desired time points based on parameters and return file statistics."""
         if self.filetype == 'hdf5':
             self.files_paths_pressure = glob.glob(file_path + "/????.h5") # indicates file paths for pressure levels
@@ -199,7 +131,7 @@ class GetDataset(Dataset):
                 #original image shape (before padding)
                 self.img_shape_x = _f['fields'].shape[2]
                 self.img_shape_y = _f['fields'].shape[3]
-                self.n_in_channels = 13 #TODO
+                self.n_in_channels = 13 
                 self.n_samples_total = self.n_years * self.n_samples_per_year
             self.files_pressure = [None for _ in range(self.n_years)]
             self.files_surface  = [None for _ in range(self.n_years)]
@@ -225,10 +157,10 @@ class GetDataset(Dataset):
             self.zarr_data = xr.open_dataset(self.file_path, engine='zarr')
             times = pd.to_datetime(self.zarr_data['time'].values)
             if mode == 'train' and lite: # training case, lite
-                train_years = times[(times.year < 2018) & (times.year > 2006)]
+                train_years = times[(times.year == 2017) & (times.month == 1) ] #USER: change to match the training and validation of your dataset
                 self.zarr_data = self.zarr_data.sel(time=train_years)
             elif mode == 'validation':           # validation
-                validation_years = times[times.year == 2019]
+                validation_years = times[(times.year == 2017) & (times.month == 2)]
                 self.zarr_data = self.zarr_data.sel(time=validation_years)
             elif mode == 'testing':           # validation
                 validation_years = times[(times.year == 2020) | (times.year == 2021)] 
@@ -236,11 +168,7 @@ class GetDataset(Dataset):
             elif mode == 'train':
                 train_years = times[(times.year < 2018) & (times.year > 1978)] # 1990
                 self.zarr_data = self.zarr_data.sel(time=train_years)
-            if daily:
-                times = pd.to_datetime(self.zarr_data['time'].values)
-                midnight_times = times[times.hour == 0]
-                self.zarr_data = self.zarr_data.sel(time=midnight_times)
-
+            
             self.n_samples_total = len(self.zarr_data['time'])
             self.img_shape_x     = len(self.zarr_data['latitude'])
             self.img_shape_y     = len(self.zarr_data['longitude'])
@@ -248,10 +176,6 @@ class GetDataset(Dataset):
             self.n_in_channels   = len(self.zarr_data.data_vars)
         else:
             raise ValueError("File type doesn't match one of hdf5, netcdf, or zarr")
-        
-        # logging.info("Number of samples per year: {}".format(self.n_samples_per_year))
-        logging.info("Found data at path {}. Number of examples: {}. Image Shape: {} x {} x {}".format(file_path, self.n_samples_total, self.img_shape_x, self.img_shape_y, self.n_in_channels))
-        logging.info("Delta t: {} hours".format(6*self.dt))
         
     def _open_pressure_file(self, file_idx):
         """Open HDF5 or NetCDF pressure file."""
@@ -389,7 +313,7 @@ class GetDataset(Dataset):
             t1, t2, t3, t4 = self._pad_data(t1, t2, t3, t4)
             return t1, t2, t3, t4
         
-        elif self.filetype == 'zarr' and not two_dimensional:
+        elif self.filetype == 'zarr':
             output_pressure = []
             output_surface  = []
             step = self.dt
@@ -456,16 +380,12 @@ class GetDataset(Dataset):
 
         return t1, t2
     
-class Get2DDataset(GetDataset):
+class Pangu2DDataset(PanguDataset):
     """Dataloader for 2D model."""
 
-    def __init__(self, params, file_path, mode, device, patch_size, forecast_length=1):
-        super().__init__(params, file_path, mode, device, patch_size, forecast_length=1)
-        if params['Lite']:
-            self.patch_size = (2, 8, 8)
-        else:
-            self.patch_size = (2, 4, 4) # TODO : need to modify if training full model
-        
+    def __init__(self, params, file_path, mode, patch_size, forecast_length=1):
+        super().__init__(params, file_path, mode, patch_size, forecast_length=1)
+        self.patch_size = self.patch_size[-2:]
         self.p_mean = np.load(params['pressure_static_data_path'])[0].reshape(5, 13, 1, 1)
         self.p_std  = np.load(params['pressure_static_data_path'])[1].reshape(5, 13, 1, 1)
         self.s_mean = np.load(params['surface_static_data_path'])[0].reshape(4, 1, 1)
@@ -510,21 +430,29 @@ class Get2DDataset(GetDataset):
             surface_ds  = output_surface_ds.isel(time=i)
             output_pressure.append(np.stack([pressure_ds['geopotential'].values, pressure_ds['specific_humidity'].values, pressure_ds['temperature'].values, pressure_ds['u_component_of_wind'].values, pressure_ds['v_component_of_wind'].values], axis=0))
             output_surface.append(np.stack([surface_ds['mean_sea_level_pressure'].values, surface_ds['10m_u_component_of_wind'].values, surface_ds['10m_v_component_of_wind'].values, surface_ds['2m_temperature'].values], axis=0))
-            output_pressure[i] = torch.as_tensor((output_pressure[i] - self.p_mean) / self.p_std)
-            output_surface[i]  = torch.as_tensor((output_surface[i] - self.s_mean) / self.s_std)
+
+            if normalize:
+                output_pressure[i] = torch.as_tensor((output_pressure[i] - self.p_mean) / self.p_std)
+                output_surface[i]  = torch.as_tensor((output_surface[i] - self.s_mean) / self.s_std)
+            else:
+                output_pressure[i] = torch.as_tensor(output_pressure[i])
+                output_surface[i]  = torch.as_tensor(output_surface[i])
             output_pressure[i], output_surface[i] = self._pad_data(output_pressure[i], output_surface[i])
 
         # p_ and s_means is a stack of the mean and standard deviation values
-        input_pressure = torch.as_tensor((input_pressure - self.p_mean) / self.p_std)
-        input_surface = torch.as_tensor((input_surface - self.s_mean)  / self.s_std)
+        if normalize:
+            input_pressure = torch.as_tensor((input_pressure - self.p_mean) / self.p_std)
+            input_surface = torch.as_tensor((input_surface - self.s_mean)  / self.s_std)
+        else:
+            input_pressure = torch.as_tensor(input_pressure)
+            input_surface  = torch.as_tensor(input_surface)
 
         # shape of input_pressure
-        # (1, 5, 13, 721, 1440)
-            
+        # (5, 13, 721, 1440)
         input_pressure, input_surface = self._pad_data(input_pressure, input_surface)
         output_pressure[0], output_surface[0] = self._pad_data(output_pressure[0], output_surface[0])
+        # Reshape into 2D
         shape_pressure  = input_pressure.shape
-        
         input_pressure  = input_pressure.reshape(-1, shape_pressure[2], shape_pressure[3])
         output_pressure[0] = output_pressure[0].reshape( -1, shape_pressure[2], shape_pressure[3])
         
@@ -534,20 +462,16 @@ class Get2DDataset(GetDataset):
         # perform padding for patch embedding step
         input_shape = t1.shape  # shape is (5 variables x 13 pressure levels x 721 latitude x 1440 longitude)
         
-#        x1_pad    = (self.patch_size[0] - (input_shape[1] % self.patch_size[0])) % self.patch_size[0] // 2
-#        x2_pad    = (self.patch_size[0] - (input_shape[1] % self.patch_size[0])) % self.patch_size[0] - x1_pad
-        x1_pad    = 0
-        x2_pad    = 0
-        y1_pad    = (self.patch_size[1] - (input_shape[2] % self.patch_size[1])) % self.patch_size[1] // 2
-        y2_pad    = (self.patch_size[1] - (input_shape[2] % self.patch_size[1])) % self.patch_size[1] - y1_pad
-        z1_pad    = (self.patch_size[2] - (input_shape[3] % self.patch_size[2])) % self.patch_size[2] // 2
-        z2_pad    = (self.patch_size[2] - (input_shape[3] % self.patch_size[2])) % self.patch_size[2] - z1_pad
+        y1_pad    = (self.patch_size[0] - (input_shape[2] % self.patch_size[0])) % self.patch_size[0] // 2
+        y2_pad    = (self.patch_size[0] - (input_shape[2] % self.patch_size[0])) % self.patch_size[0] - y1_pad
+        z1_pad    = (self.patch_size[1] - (input_shape[3] % self.patch_size[1])) % self.patch_size[1] // 2
+        z2_pad    = (self.patch_size[1] - (input_shape[3] % self.patch_size[1])) % self.patch_size[1] - z1_pad
 
         # pad pressure fields input and output
-        t1 = torch.nn.functional.pad(t1, pad=(z1_pad, z2_pad, y1_pad, y2_pad, x1_pad, x2_pad), mode='constant', value=0)
+        t1 = torch.nn.functional.pad(t1, pad=(z1_pad, z2_pad, y1_pad, y2_pad), mode='constant', value=0)
         
         # pad 
-        t2  = torch.nn.functional.pad(t2, pad=(z1_pad, z2_pad, y1_pad, y2_pad), mode='constant', value=0)
+        t2 = torch.nn.functional.pad(t2, pad=(z1_pad, z2_pad, y1_pad, y2_pad), mode='constant', value=0)
 
         return t1, t2
     

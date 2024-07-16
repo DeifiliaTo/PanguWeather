@@ -6,6 +6,7 @@ __pycache__/*
 */__pycache__/*
 input/*
 *.ipynb
+*/*.ipynb
 *gfx/*
 *trained_models/*
 loss_schedule_exp/trained_models*
@@ -19,3 +20,9 @@ partialdata.zarr/*
 *.sh
 train2.py
 */*.pt
+data_download/calculate_static.py
+data_download/calculate_static_netcdf.py
+data_download/download_pressures.py
+data_download/download_surface.py
+data_download/write_pressure_to_hdf5.py
+utils/dataReformatter.py

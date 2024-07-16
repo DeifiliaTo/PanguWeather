@@ -1,12 +1,13 @@
 #!/bin/bash
-#SBATCH --partition=accelerated
-#SBATCH --gres=gpu:1
+#SBATCH --partition=accelerated-h100
+#SBATCH --gres=gpu:4
 #SBATCH --time=1:00:00
-#SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1
+#SBATCH --nodes=2
+#SBATCH --ntasks-per-node=4
 #SBATCH --account='hk-project-p0021348'
 #SBATCH --output='test.out'
 #SBATCH --job-name='test'
+#SBATCH --constraint='LSDF'
 
 module purge # Unload all models.
 module load jupyter/tensorflow eccodes-2.30.2_i22_ompi40

@@ -287,8 +287,8 @@ if __name__ == '__main__':
     params = {}
     params['train_data_path'] =  '/lsdf/kit/imk-tro/projects/Gruppe_Quinting/ec.era5/1959-2023_01_10-wb13-6h-1440x721.zarr'
     params['valid_data_path'] =  '/lsdf/kit/imk-tro/projects/Gruppe_Quinting/ec.era5/1959-2023_01_10-wb13-6h-1440x721.zarr'
-    params['pressure_static_data_path'] = '/hkfs/work/workspace/scratch/ke4365-pangu/PANGU_ERA5_data_v0/static/pressure_zarr.npy' 
-    params['surface_static_data_path'] =  '/hkfs/work/workspace/scratch/ke4365-pangu/PANGU_ERA5_data_v0/static/surface_zarr.npy'  
+    params['pressure_static_data_path'] = '../constant_masks/pressure_zarr.npy' 
+    params['surface_static_data_path'] =  '../constant_masks/surface_zarr.npy'  
     params['dt'] = 24
     params['num_data_workers'] = 2
     params['data_distributed'] = True
@@ -316,7 +316,7 @@ if __name__ == '__main__':
     # positionEmbedding     = absolute position embedding
 
     # Save directory
-    base_save_dir = '/hkfs/work/workspace/scratch/ke4365-pangu/pangu-weather/loss_schedule_exp/trained_models/'
+    base_save_dir = 'trained_models/'
         
     
     # Set seeds for reproducability
