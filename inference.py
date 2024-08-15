@@ -27,13 +27,17 @@ from utils.data_loader_multifiles import get_data_loader
 
 def load_model(path_to_model, model, optimizer=None):
     state = torch.load(path_to_model, map_location=torch.device('cpu'))
-    
-    new_checkpoint = {}
-    for key, value in state['model_state'].items():
-        new_key = key.replace('module.', '') if 'module.' in key else key
-        new_checkpoint[new_key] = value
-    model.load_state_dict(new_checkpoint)
+
     print("loading model")
+    try:
+        model.load_state_dict(state)
+    except RuntimeError as e:
+        new_checkpoint = {}
+        for key, value in state['model_state'].items():
+            new_key = key.replace('module.', '') if 'module.' in key else key
+            new_checkpoint[new_key] = value
+        model.load_state_dict(new_checkpoint)
+        
     
     if optimizer is not None:
         optimizer.load_state_dict(state['optimizer_state'])
